@@ -110,10 +110,9 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """基于绝对 XPath 与多重策略的高耐性第二个人机验证处理逻辑"""
+    """通过定位周边的 Cancel 按钮来锁定弹窗并处理人机验证（精简为 5 轮）"""
     try:
-        # 将轮询扩大到 20 次，给予充足的等待时间
-        for attempt in range(1, 21):
+        for attempt in range(1, 6):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
             
             # 1. 检查 Token 是否已经生成
@@ -127,41 +126,47 @@ def handle_modal_turnstile(sb):
                 except Exception:
                     pass
 
-            # 2. 使用你提供的全 XPath 及其他备用选择器检查元素是否存在
-            abs_xpath = '/html/body//div/div/div[1]/div/label/input'
-            has_checkbox = sb.is_element_present(f'xpath:{abs_xpath}')
-            
-            # 备用：如果在弹窗内部，也可以直接用 JS 全局找 type="checkbox"
-            if not has_checkbox:
-                has_checkbox = sb.is_element_present('input[type="checkbox"]')
+            # 2. 查找和人机在一起的 Cancel 按钮
+            has_cancel = sb.is_element_present('xpath://button[contains(., "Cancel")]')
+            print(f"[DIAGNOSTIC] 周边定位 -> Cancel按钮存在: {has_cancel}, response输入框存在: {has_response_input}")
 
-            print(f"[DIAGNOSTIC] 状态检测 -> 绝对XPath目标存在: {has_checkbox}, response输入框存在: {has_response_input}")
-
-            if not has_checkbox:
-                print(f"[INFO] ⏳ 验证框尚未加载出来，继续耐性等待...")
+            if not has_cancel:
+                print(f"[INFO] ⏳ 弹窗和 Cancel 按钮尚未加载出来，等待 3 秒...")
                 sb.sleep(3)
                 continue
 
-            # 3. 抓到了！立刻通过绝对 XPath 或 JS 点击
-            print(f"[INFO] 🎯 成功通过绝对 XPath 捕捉到验证框，准备执行点击...")
-            try:
-                sb.scroll_to(f'xpath:{abs_xpath}')
-                sb.click(f'xpath:{abs_xpath}')
-                print("[INFO] 🖱️ 已成功点击绝对路径下的复选框")
-            except Exception as e:
-                print(f"[WARN] 原生点击异常，尝试 JS 强制触发: {e}")
+            # 3. 既然 Cancel 按钮找到了，说明弹窗已经稳稳加载了！
+            # 我们通过 JavaScript 直接在整个文档（或 Cancel 的父容器内）寻找那个藏起来的复选框并点击
+            print(f"[INFO] 🎯 已捕获到弹窗锚点，正在强制触发验证框点击...")
+            clicked = sb.execute_script('''
+                let cb = document.querySelector('input[type="checkbox"]') || document.querySelector('label.fXVnL4');
+                if (cb) {
+                    cb.click();
+                    return true;
+                }
+                // 如果实在找不到 checkbox，尝试点击页面上所有的 label 或 div 容器
+                let labels = document.querySelectorAll('label');
+                for (let l of labels) {
+                    if (l.innerText.includes('真人') || l.innerText.includes('Verify')) {
+                        l.click();
+                        return true;
+                    }
+                }
+                return false;
+            ''')
+
+            if clicked:
+                print("[INFO] 🖱️ 已通过 JS 成功触发验证区域点击。")
+            else:
+                print("[INFO] 🖱️ 未直接命中内部元素，执行 uc_gui_click_captcha() 物理点击兜底...")
                 try:
-                    sb.execute_script('''
-                        let cb = document.querySelector('input[type="checkbox"]');
-                        if (cb) cb.click();
-                    ''')
+                    sb.uc_gui_click_captcha()
                 except Exception:
                     pass
 
-            # 点击后暂停 3 秒，等待 Cloudflare 响应验证结果
-            sb.sleep(3)
+            sb.sleep(4)
             
-        print("[WARN] ❌ 对话框内第二个人机验证在长时间轮询后仍未通过。")
+        print("[WARN] ❌ 对话框内第二个人机验证在 5 轮排查后仍未通过。")
         try:
             sb.save_screenshot("debug_modal_turnstile.png")
             print("[INFO] 📸 已保存现场截图到 debug_modal_turnstile.png")
