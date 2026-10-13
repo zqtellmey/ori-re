@@ -110,8 +110,18 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """通过定位周边的 Cancel 按钮来锁定弹窗并处理人机验证（精简为 5 轮）"""
+    """源码转储与排查逻辑（5 轮）"""
     try:
+        # 进入时立刻把当前页面的源码打印出来，彻底查明当前究竟在哪个页面、有没有 iframe 干扰
+        print("\n================ [DEBUG: 当前页面源码转储开始] ================")
+        try:
+            page_source = sb.get_page_source()
+            # 打印前 3000 个字符，防止日志被撑爆，但足够看清关键结构
+            print(page_source[:3000])
+            print("...\n[DEBUG: 当前页面源码转储结束 ================")
+        except Exception as e:
+            print(f"[DEBUG] 打印源码异常: {e}")
+
         for attempt in range(1, 6):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
             
@@ -126,7 +136,7 @@ def handle_modal_turnstile(sb):
                 except Exception:
                     pass
 
-            # 2. 查找和人机在一起的 Cancel 按钮
+            # 2. 检查 Cancel 按钮或任何按钮
             has_cancel = sb.is_element_present('xpath://button[contains(., "Cancel")]')
             print(f"[DIAGNOSTIC] 周边定位 -> Cancel按钮存在: {has_cancel}, response输入框存在: {has_response_input}")
 
@@ -135,8 +145,7 @@ def handle_modal_turnstile(sb):
                 sb.sleep(3)
                 continue
 
-            # 3. 既然 Cancel 按钮找到了，说明弹窗已经稳稳加载了！
-            # 我们通过 JavaScript 直接在整个文档（或 Cancel 的父容器内）寻找那个藏起来的复选框并点击
+            # 3. 找到 Cancel 按钮后尝试触发
             print(f"[INFO] 🎯 已捕获到弹窗锚点，正在强制触发验证框点击...")
             clicked = sb.execute_script('''
                 let cb = document.querySelector('input[type="checkbox"]') || document.querySelector('label.fXVnL4');
@@ -144,21 +153,10 @@ def handle_modal_turnstile(sb):
                     cb.click();
                     return true;
                 }
-                // 如果实在找不到 checkbox，尝试点击页面上所有的 label 或 div 容器
-                let labels = document.querySelectorAll('label');
-                for (let l of labels) {
-                    if (l.innerText.includes('真人') || l.innerText.includes('Verify')) {
-                        l.click();
-                        return true;
-                    }
-                }
                 return false;
             ''')
 
-            if clicked:
-                print("[INFO] 🖱️ 已通过 JS 成功触发验证区域点击。")
-            else:
-                print("[INFO] 🖱️ 未直接命中内部元素，执行 uc_gui_click_captcha() 物理点击兜底...")
+            if not clicked:
                 try:
                     sb.uc_gui_click_captcha()
                 except Exception:
@@ -313,10 +311,10 @@ def main():
                 else:
                     print("提示：未能在弹窗中找到 Read Article 按钮。")
 
-                # 将初始等待时间延长到 55 秒，确保给验证框完整的预热加载时间
-                print("已点击 Read Article，等待 55 秒让验证框完全渲染加载...")
-                time.sleep(55)
-                send_telegram_photo(sb, "8_点击ReadArticle等待55秒后")
+                # 将等待时间缩短为 25 秒，然后直接转储源码
+                print("已点击 Read Article，等待 25 秒后转储源码分析...")
+                time.sleep(25)
+                send_telegram_photo(sb, "8_点击ReadArticle等待25秒后")
 
                 print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
                 remove_ads(sb)
@@ -345,7 +343,7 @@ def main():
                             for (let btn of buttons) {
                                 if (btn.innerText.includes('Claim Renewal')) {
                                     btn.click();
-                                    return true;
+                                    break;
                                 }
                             }
                         })();
