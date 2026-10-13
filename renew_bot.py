@@ -135,16 +135,12 @@ def handle_modal_turnstile(sb):
             print(f"[INFO] 🎯 正在执行 Shadow DOM 及 iframe 深度穿透扫描与点击...")
             clicked = sb.execute_script("""
                 (function() {
-                    // 递归遍历函数：支持普通 DOM 和 Shadow DOM
                     function deepQueryClick(root) {
-                        // 1. 在当前根节点下找 checkbox 或 label
                         let cb = root.querySelector ? root.querySelector('input[type="checkbox"]') : null;
                         if (cb) {
                             cb.click();
                             return "Clicked Shadow/Main checkbox";
                         }
-                        
-                        // 2. 遍历所有子元素，检查是否有 shadowRoot
                         let allElements = root.querySelectorAll ? root.querySelectorAll('*') : [];
                         for (let el of allElements) {
                             if (el.shadowRoot) {
@@ -155,11 +151,9 @@ def handle_modal_turnstile(sb):
                         return null;
                     }
 
-                    // A. 先从主文档及所有 Shadow DOM 开始找
                     let result = deepQueryClick(document);
                     if (result) return result;
 
-                    // B. 如果还没找到，深入到页面中所有的 iframe 内部去递归找
                     let iframes = document.querySelectorAll('iframe');
                     for (let f of iframes) {
                         try {
@@ -186,10 +180,8 @@ def handle_modal_turnstile(sb):
                 except Exception as e:
                     print(f"[DEBUG] uc_gui_click_captcha 提示: {e}")
 
-            # 等待 4 秒观察响应
             sb.sleep(4)
             
-            # 3. 再次校验 Token
             if sb.is_element_present('input[name="cf-turnstile-response"]'):
                 try:
                     token_val = sb.execute_script("""
@@ -351,13 +343,43 @@ def main():
                 else:
                     print("提示：未能在弹窗中找到 Read Article 按钮。")
 
-                # 将等待时间缩短为 25 秒，然后直接转储源码
-                print("已点击 Read Article，等待 25 秒后转储源码分析...")
+                print("已点击 Read Article，等待 25 秒后转储当前页面的源码分析...")
                 time.sleep(25)
                 send_telegram_photo(sb, "8_点击ReadArticle等待25秒后")
 
-                print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
+                # 转储当前网页源码到本地文件以便肉眼排查
+                try:
+                    page_html = sb.get_page_source()
+                    dump_filename = f"page_dump_{int(time.time())}.html"
+                    with open(dump_filename, "w", encoding="utf-8") as f:
+                        f.write(page_html)
+                    print(f"[INFO] 📄 当前页面源码已成功转储到本地文件: {dump_filename}")
+                except Exception as e:
+                    print(f"[WARN] 转储源码失败: {e}")
+
+                print("=== 6. 严格检查并处理对话框内的第二个 Cloudflare 人机验证 ===")
                 remove_ads(sb)
+                
+                # 严格的前置校验：确保页面上确实存在验证元素或目标容器，否则直接拦截报错
+                element_found = sb.execute_script("""
+                    (function() {
+                        let respInput = document.querySelector('input[name="cf-turnstile-response"]');
+                        let checkbox = document.querySelector('input[type="checkbox"]');
+                        let modalPortal = document.querySelector('#modal-portal');
+                        
+                        if (respInput || checkbox || (modalPortal && modalPortal.innerHTML.trim() !== '')) {
+                            return true;
+                        }
+                        return false;
+                    })();
+                """)
+
+                if not element_found:
+                    print("[ERROR] ❌ 严格检查失败：当前页面未检测到第二个人机验证元素或目标对话框！")
+                    send_telegram_photo(sb, "9_未找到第二个人机验证元素")
+                    return
+
+                print("[INFO] ✅ 已成功锁定人机验证元素，开始执行交互...")
                 passed = handle_modal_turnstile(sb)
                 
                 if not passed:
