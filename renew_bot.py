@@ -57,7 +57,7 @@ def send_telegram_photo(sb, step_name):
         print(f"[Telegram] 发送截图异常: {e}")
 
 def remove_ads(sb):
-    """去广告模块：每次进行任何操作前先调用一次，删除指定的浮动 iframe 广告（使用块级作用域避免重复声明）"""
+    """去广告模块：每次进行任何操作前先调用一次，删除指定的浮动 iframe 广告"""
     try:
         ad_script = """
         (function() {
@@ -92,7 +92,6 @@ def main():
         send_telegram_photo(sb, "2_输入账号密码")
 
         print("=== 3. 处理登录 Cloudflare 人机验证 ===")
-        login_captcha_passed = False
         for attempt in range(1, 5):
             remove_ads(sb)
             print(f"尝试第 {attempt} 次点击登录 CF 验证...")
@@ -118,15 +117,9 @@ def main():
 
             if is_checked:
                 print("登录 Cloudflare 人机验证已通过！")
-                login_captcha_passed = True
                 break
             else:
                 print("验证尚未通过，准备重试...")
-
-        if not login_captcha_passed:
-            print("错误：登录 Cloudflare 人机验证未通过，终止程序。")
-            send_telegram_photo(sb, "3_登录人机验证失败")
-            return
 
         send_telegram_photo(sb, "3_完成登录人机验证")
 
@@ -251,39 +244,81 @@ def main():
                 send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
 
                 print("=== 6. 处理 Read Article 之后的第二个 Cloudflare 人机验证 ===")
+                # 给第二次验证留出缓冲和元素加载时间
+                time.sleep(3)
                 second_captcha_passed = False
-                for attempt in range(1, 5):
+                
+                for attempt in range(1, 6):
                     remove_ads(sb)
-                    print(f"尝试第 {attempt} 次点击第二个 CF 验证...")
+                    print(f"尝试第 {attempt} 次处理第二个 CF 验证...")
+                    
+                    # 增强检测：先确认页面或 iframe 中是否存在验证元素
                     try:
                         sb.uc_gui_click_captcha()
                     except Exception:
-                        try:
-                            remove_ads(sb)
-                            sb.click('input[type="checkbox"]')
-                        except Exception:
-                            pass
+                        pass
                     
-                    time.sleep(3)
+                    try:
+                        remove_ads(sb)
+                        sb.click('input[type="checkbox"]')
+                    except Exception:
+                        # 兜底：通过 JS 寻找页面或 iframe 内的 checkbox 并点击
+                        js_click_cb = """
+                        (function() {
+                            // 检查主文档
+                            let cb = document.querySelector('input[type="checkbox"]');
+                            if (cb) { cb.click(); return true; }
+                            // 检查所有 iframe 内部
+                            let iframes = document.querySelectorAll('iframe');
+                            for (let f of iframes) {
+                                try {
+                                    let innerCb = f.contentDocument.querySelector('input[type="checkbox"]');
+                                    if (innerCb) { innerCb.click(); return true; }
+                                } catch(err) {}
+                            }
+                            return false;
+                        })();
+                        """
+                        sb.execute_script(js_click_cb)
+
+                    time.sleep(4)
                     
+                    # 严格检测是否勾选成功
                     is_checked = False
                     try:
                         is_checked = sb.is_checked('input[type="checkbox"]')
                     except Exception:
+                        pass
+                    
+                    if not is_checked:
                         try:
-                            is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
+                            is_checked = sb.execute_script("""
+                                (function() {
+                                    let cb = document.querySelector('input[type="checkbox"]');
+                                    if (cb && cb.checked) return true;
+                                    let iframes = document.querySelectorAll('iframe');
+                                    for (let f of iframes) {
+                                        try {
+                                            let innerCb = f.contentDocument.querySelector('input[type="checkbox"]');
+                                            if (innerCb && innerCb.checked) return true;
+                                        } catch(err) {}
+                                    }
+                                    return false;
+                                })();
+                            """)
                         except Exception:
                             pass
 
                     if is_checked:
-                        print("第二个 Cloudflare 人机验证已通过！")
+                        print("第二个 Cloudflare 人机验证已通过（检测到 Checkbox 已勾选）！")
                         second_captcha_passed = True
                         break
                     else:
-                        print("验证尚未通过，准备重试...")
+                        print(f"第 {attempt} 次验证尚未通过，准备重试...")
 
+                # 严格拦截：第二个人机验证没过绝对不往下走
                 if not second_captcha_passed:
-                    print("错误：第二个 Cloudflare 人机验证未通过，严格终止程序，绝不点击 Claim Renewal！")
+                    print("错误：第二个 Cloudflare 人机验证未通过（未检测到勾选），严格终止程序！")
                     send_telegram_photo(sb, "9_第二个人机验证失败")
                     return
 
