@@ -20,8 +20,8 @@ API_SERVER_URL = os.environ.get("API_SERVER_URL", "").strip()
 SERVER_PANEL_URL = os.environ.get("SERVER_PANEL_URL", "").strip()
 EMAIL = os.environ.get("ORI_EMAIL", "").strip()
 PASSWORD = os.environ.get("ORI_PASSWORD", "").strip()
-TG_BOT_TOKEN = os.environ.get("TELEGRAM_BOT_TOKEN", "").strip()
-TG_CHAT_ID = os.environ.get("TELEGRAM_CHAT_ID", "").strip()
+TG_BOT_TOKEN = os.environ.get("TG_BOT_TOKEN", "").strip()
+TG_CHAT_ID = os.environ.get("TG_CHAT_ID", "").strip()
 PROXY_SOCKS5 = os.environ.get("PROXY_SOCKS5", "").strip()
 
 # --- 看门狗安全中断 ---
@@ -39,7 +39,7 @@ def cn_time_str(fmt: str = "%Y-%m-%d %H:%M:%S") -> str:
 def is_linux(): 
     return platform.system().lower() == "linux"
 
-# --- 设置纵向超长虚拟桌面 (焊死不变) ---
+# --- 设置纵向超长虚拟桌面 ---
 def setup_display():
     if is_linux() and not os.environ.get("DISPLAY"):
         try:
@@ -70,31 +70,30 @@ def notify(ok: bool, stage: str, msg: str = "", img: str = None):
     except Exception as e: 
         print(f"[ERROR] 发送 TG 通知失败: {e}")
 
-# --- 完美移植自成功参考脚本的双重循环过检机制 (焊死不变) ---
+# --- 参考脚本的高效过检机制（专门用于对话框内的第二个人机） ---
 def handle_turnstile_exact_replica(sb) -> bool:
     try:
-        # 进行 2 轮循环检测与调度穿透，确保拦截层加载彻底，防止漏检
         for attempt in range(1, 3):
-            print(f"[INFO] ⏱️ [第 {attempt} 轮检测] 预留 5 秒等待 Cloudflare 拦截层加载...")
+            print(f"[INFO] ⏱️ [对话框 CF 第 {attempt} 轮检测] 等待 5 秒等待拦截层加载...")
             sb.sleep(5)
             
             has_turnstile = sb.execute_script('return document.querySelector("input[name=\'cf-turnstile-response\']") !== null')
             
             if has_turnstile: 
-                print(f"[INFO] 🛡️ [第 {attempt} 轮] 发现 Cloudflare Turnstile 人机验证框！")
-                sb.save_screenshot(shot(f"cf_detected_attempt_{attempt}"))
+                print(f"[INFO] 🛡️ [对话框 CF 第 {attempt} 轮] 发现 Cloudflare Turnstile 人机验证框！")
+                sb.save_screenshot(shot(f"modal_cf_detected_{attempt}"))
                 
-                print(f"[INFO] ⚡ [第 {attempt} 轮] 正在启动物理级 uc_gui_click_captcha() 穿透点击...")
+                print(f"[INFO] ⚡ [对话框 CF 第 {attempt} 轮] 正在启动物理级 uc_gui_click_captcha() 穿透点击...")
                 sb.uc_gui_click_captcha()
                 
-                print(f"[INFO] ⏳ [第 {attempt} 轮] 物理点击完成，等待 5 秒让状态同步...")
+                print(f"[INFO] ⏳ [对话框 CF 第 {attempt} 轮] 物理点击完成，等待 5 秒让状态同步...")
                 sb.sleep(5)
             else:
-                print(f"[INFO] 🟢 [第 {attempt} 轮] 当前节点未检测到 CF 拦截框。")
+                print(f"[INFO] 🟢 [对话框 CF 第 {attempt} 轮] 当前视图未检测到 CF 拦截框。")
         
         return True
     except Exception as e: 
-        print(f"[WARN] 穿透 CF 验证时发生非致命异常: {e}")
+        print(f"[WARN] 穿透 CF 验证时发生异常: {e}")
         return False
 
 # --- 去广告模块 ---
@@ -115,58 +114,60 @@ def remove_ads(sb):
     except Exception as e:
         print(f"[广告清除] 执行时出现异常: {e}")
 
-# --- 登录流程 (严格采用参考脚本的逻辑) ---
+# --- 恢复您原本稳定好用的登录逻辑 ---
 def login(sb, user: str, pwd: str) -> bool:
     print(f"[INFO] 正在建立安全连接进入登录页面...")
     try:
         remove_ads(sb)
         sb.open(LOGIN_URL)
-        time.sleep(4)
+        time.sleep(3)
         
         init_login_shot = shot("init_opened_login_page")
         sb.save_screenshot(init_login_shot)
-        print("[INFO] 📸 已捕获刚进入登录页的初始画面，正在发送 TG 通报...")
         notify(True, "登录页初始加载成功", "已成功打开登录页面，正在准备处理表单。", init_login_shot)
-        
-        # 在输入表单前，优先调度双重 CF 穿透检测
-        print("[INFO] 🛡️ 正在对登录页面执行 Cloudflare 穿透检测...")
-        handle_turnstile_exact_replica(sb)
 
-        sb.wait_for_element_present('input[name="username"]', timeout=15)
-
-        print("[INFO] 输入账号并刷新表单状态...")
-        sb.click('input[name="username"]')
+        print("=== 2. 输入登录信息 ===")
+        remove_ads(sb)
         sb.type('input[name="username"]', user)
-        sb.execute_script('''
-            var emailInput = document.querySelector('input[name="username"]');
-            if (emailInput) {
-                emailInput.dispatchEvent(new Event("input", { bubbles: true }));
-                emailInput.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-        ''')
-        
-        print("[INFO] 输入密码并刷新表单状态...")
-        sb.click('input[name="password"]')
+        time.sleep(1)
         sb.type('input[name="password"]', pwd)
-        sb.execute_script('''
-            var pwdInput = document.querySelector('input[name="password"]');
-            if (pwdInput) {
-                pwdInput.dispatchEvent(new Event("input", { bubbles: true }));
-                pwdInput.dispatchEvent(new Event("change", { bubbles: true }));
-            }
-        ''')
-        time.sleep(2)
-        
-        sb.save_screenshot(shot("before_login_click"))
+        time.sleep(1)
 
-        print("[INFO] 正在触发登录提交...")
-        sb.click("button[type='submit']")
-        time.sleep(6)
-        
-        # 提交后防止页面二次弹窗拦截，再次调度 CF 检测
-        print("[INFO] 🛡️ 提交后二次对登录页面执行 Cloudflare 穿透检测...")
-        handle_turnstile_exact_replica(sb)
+        print("=== 3. 处理登录 Cloudflare 人机验证 ===")
+        for attempt in range(1, 5):
+            remove_ads(sb)
+            print(f"尝试第 {attempt} 次点击登录 CF 验证...")
+            try:
+                sb.uc_gui_click_captcha()
+            except Exception:
+                try:
+                    remove_ads(sb)
+                    sb.click('input[type="checkbox"]')
+                except Exception:
+                    pass
+            
+            time.sleep(3)
+            
+            is_checked = False
+            try:
+                is_checked = sb.is_checked('input[type="checkbox"]')
+            except Exception:
+                try:
+                    is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
+                except Exception:
+                    pass
 
+            if is_checked:
+                print("登录 Cloudflare 人机验证已通过！")
+                break
+            else:
+                print("验证尚未通过，准备重试...")
+
+        print("=== 4. 点击 Sign In 按钮 ===")
+        remove_ads(sb)
+        sb.click('button[type="submit"]')
+        time.sleep(5)
+        
         current_url = sb.get_current_url()
         print(f"[INFO] 登录判定完成，当前 URL: {current_url}")
         return "auth/login" not in current_url and "login" not in current_url
@@ -200,9 +201,7 @@ def main():
             
             if login(sb, EMAIL, PASSWORD):
                 print("✅ 成功突围至后台。")
-                send_telegram_photo = lambda s_name: notify(True, f"步骤: {s_name}", "执行正常", shot(s_name)) if not ENABLE_SCREENSHOTS_OFF else None
                 
-                # 获取服务器状态
                 print("=== 5. 通过 API 获取服务器状态 ===")
                 cookies = sb.get_cookies()
                 session = requests.Session()
