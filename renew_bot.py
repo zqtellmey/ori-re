@@ -1,5 +1,4 @@
 import os
-import sys
 import time
 import platform
 import requests
@@ -76,41 +75,6 @@ def remove_ads(sb):
     except Exception as e:
         print(f"[广告清除] 执行时出现异常: {e}")
 
-def handle_login_turnstile(sb):
-    """登录页面的 CF 验证处理逻辑"""
-    try:
-        for attempt in range(1, 6):
-            print(f"[INFO] ⏱️ [登录CF第 {attempt} 轮] 检查验证状态...")
-            has_turnstile = sb.execute_script('return document.querySelector("input[name=\'cf-turnstile-response\']") !== null')
-            
-            if has_turnstile:
-                print(f"[INFO] 🛡️ [登录CF第 {attempt} 轮] 发现验证框，触发点击...")
-                sb.uc_gui_click_captcha()
-                sb.sleep(4)
-            else:
-                print(f"[INFO] 🟢 [登录CF第 {attempt} 轮] 未检测到验证输入框。")
-
-            is_passed = sb.execute_script('''
-                (function() {
-                    let respInput = document.querySelector("input[name='cf-turnstile-response']");
-                    if (respInput && respInput.value && respInput.value.length > 0) return true;
-                    let cb = document.querySelector('input[type="checkbox"]');
-                    if (cb && cb.checked) return true;
-                    return false;
-                })();
-            ''')
-
-            if is_passed:
-                print("[INFO] ✅ 登录 Cloudflare 人机验证已成功通过！")
-                sb.sleep(2)
-                return True
-            else:
-                sb.sleep(3)
-        return False
-    except Exception as e:
-        print(f"[WARN] 登录 CF 验证异常: {e}")
-        return False
-
 
 # ==================== 高级弹窗 Turnstile 过检核心模块 ====================
 RESET_TS_JS = """
@@ -171,8 +135,7 @@ def click_turnstile_box(sb):
     sb.uc_gui_click_x_y(x, y)
 
 def pass_modal_turnstile(sb, timeout=90):
-    """系统级鼠标精准点 Turnstile，直到拿到 token 或通过"""
-    # 1. 等待 iframe 出现
+    """系统级鼠标精准点弹窗中的 Turnstile，直到拿到 token 或通过"""
     end = time.time() + 20
     while time.time() < end and not sb.is_element_present('iframe[src*="challenges.cloudflare.com"]'):
         sb.sleep(1)
@@ -180,7 +143,6 @@ def pass_modal_turnstile(sb, timeout=90):
     
     start, clicks = time.time(), 0
     while time.time() - start < timeout:
-        # 检查是否已拿到 token
         token_passed = sb.execute_script('''
             let inp = document.querySelector('input[name="cf-turnstile-response"]');
             return inp && inp.value && inp.value.length > 0;
@@ -239,14 +201,42 @@ def main():
             send_telegram_photo(sb, "2_输入账号密码")
 
             print("=== 3. 处理登录 Cloudflare 人机验证 ===")
-            remove_ads(sb)
-            handle_login_turnstile(sb)
+            # 完美恢复您最开始验证通过的稳定登录过检逻辑
+            for attempt in range(1, 5):
+                remove_ads(sb)
+                print(f"尝试第 {attempt} 次点击登录 CF 验证...")
+                try:
+                    sb.uc_gui_click_captcha()
+                except Exception:
+                    try:
+                        remove_ads(sb)
+                        sb.click('input[type="checkbox"]')
+                    except Exception:
+                        pass
+                
+                time.sleep(3)
+                
+                is_checked = False
+                try:
+                    is_checked = sb.is_checked('input[type="checkbox"]')
+                except Exception:
+                    try:
+                        is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
+                    except Exception:
+                        pass
+
+                if is_checked:
+                    print("登录 Cloudflare 人机验证已通过！")
+                    break
+                else:
+                    print("验证尚未通过，准备重试...")
+
             send_telegram_photo(sb, "3_完成登录人机验证")
 
             print("=== 4. 点击 Sign In 按钮 ===")
             remove_ads(sb)
             sb.click('button[type="submit"]')
-            time.sleep(6)
+            time.sleep(5)
             send_telegram_photo(sb, "4_登录后主页")
 
             print("=== 5. 通过 API 获取服务器状态 ===")
