@@ -94,12 +94,14 @@ def main():
         print("=== 3. 处理 Cloudflare 人机验证 ===")
         # 多次尝试点击 CF 验证的 checkbox (至少 3 次或直到通过)
         for attempt in range(1, 5):
+            # 点击验证前先去广告
             remove_ads(sb)
             print(f"尝试第 {attempt} 次点击 Cloudflare 验证...")
             try:
                 sb.uc_gui_click_captcha()  # SeleniumBase 内置的验证码辅助点击
             except Exception:
                 try:
+                    remove_ads(sb)
                     sb.click('input[type="checkbox"]')
                 except Exception:
                     pass
@@ -125,6 +127,7 @@ def main():
         send_telegram_photo(sb, "3_完成人机验证")
 
         print("=== 4. 点击 Sign In 按钮 ===")
+        # 点击登录按钮前去广告
         remove_ads(sb)
         sb.click('button[type="submit"]')
         time.sleep(5)
@@ -162,8 +165,8 @@ def main():
         print(f"服务器状态检查 -> renewable: {renewable}, renewal 剩余天数: {renewal_days}")
         send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
 
-        # 如果测试需要（比如这里您改成了 <= 7 天或者实际满足 <= 2 天）
-        if renewable and renewal_days <= 7:
+        # 如果 renewable 为 true 并且剩余天数符合条件（测试时可设为 <= 7，实际使用建议改为 <= 2）
+        if renewable and renewal_days <= 2:
             print("满足续期条件，开始前往续期页面...")
             remove_ads(sb)
             sb.open(SERVER_PANEL_URL)
@@ -173,7 +176,6 @@ def main():
             print("检查页面上是否存在 Renew 按钮...")
             remove_ads(sb)
             
-            # 先安全地检查页面上是否存在包含 "Renew" 的按钮，而不直接抛错中断
             has_renew_button = False
             try:
                 js_check_script = """
@@ -192,10 +194,13 @@ def main():
                 has_renew_button = False
 
             if has_renew_button:
-                print("检测到 Renew 按钮，开始点击...")
+                print("检测到 Renew 按钮，准备点击...")
+                # 点击 Renew 按钮前去广告
+                remove_ads(sb)
                 try:
                     sb.click('xpath://button[contains(., "Renew")]')
                 except Exception:
+                    remove_ads(sb)
                     sb.execute_script("""
                         const buttons = document.querySelectorAll('button');
                         for (let btn of buttons) {
@@ -206,8 +211,43 @@ def main():
                         }
                     """)
                 
-                time.sleep(5)
+                time.sleep(3)
                 send_telegram_photo(sb, "7_点击Renew之后")
+
+                print("检查并点击弹窗中的 Read Article 按钮...")
+                # 点击 Read Article 按钮前去广告
+                remove_ads(sb)
+                
+                clicked_read_article = False
+                try:
+                    sb.click('xpath://button[contains(., "Read Article")]')
+                    clicked_read_article = True
+                except Exception:
+                    try:
+                        remove_ads(sb)
+                        js_read_script = """
+                        (function() {
+                            const buttons = document.querySelectorAll('button');
+                            for (let btn of buttons) {
+                                if (btn.innerText.includes('Read Article')) {
+                                    btn.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        })();
+                        """
+                        clicked_read_article = sb.execute_script(js_read_script)
+                    except Exception as e:
+                        print(f"点击 Read Article 按钮时发生异常: {e}")
+
+                if clicked_read_article:
+                    print("成功点击 Read Article 按钮。")
+                else:
+                    print("提示：未能在弹窗中找到 Read Article 按钮。")
+
+                time.sleep(5)
+                send_telegram_photo(sb, "8_点击ReadArticle之后")
 
                 print("再次通过 API 验证是否续期成功...")
                 check_response = session.get(API_SERVER_URL, headers=headers)
@@ -215,7 +255,7 @@ def main():
                     new_data = check_response.json().get("attributes", {})
                     new_renewal_days = new_data.get("renewal")
                     print(f"续期后的剩余天数: {new_renewal_days}")
-                    send_telegram_photo(sb, f"8_续期完成(新剩余天数{new_renewal_days}天)")
+                    send_telegram_photo(sb, f"9_续期完成(新剩余天数{new_renewal_days}天)")
             else:
                 print("提示：当前页面未找到 Renew 按钮（可能还未到可续期时间或无需续期），跳过点击操作。")
                 send_telegram_photo(sb, "7_未找到Renew按钮跳过")
