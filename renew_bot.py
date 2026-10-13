@@ -1,5 +1,7 @@
 import os
+import sys
 import time
+import platform
 import requests
 from seleniumbase import SB
 
@@ -90,14 +92,14 @@ def handle_turnstile_exact_replica(sb):
                 print(f"[INFO] ⏳ [对话框 CF 第 {attempt} 轮] 物理点击完成，等待 5 秒让状态同步...")
                 sb.sleep(5)
             else:
-                print(f"[INFO] 🟢 [对话框 CF 第 {attempt} 轮] 当前视图未检测到 CF 拦截框。")
+                print(f"[INFO] 🟢 [对话框 CF 第 {attempt} 轮] 当前节点未检测到 CF 拦截框。")
         return True
     except Exception as e: 
         print(f"[WARN] 穿透 CF 验证时发生异常: {e}")
         return False
 
 def main():
-    # 尝试引入虚拟屏支持（如果存在）
+    # 尝试引入虚拟屏支持
     display = None
     if platform.system().lower() == "linux" and not os.environ.get("DISPLAY"):
         try:
@@ -302,10 +304,9 @@ def main():
                                 for (let btn of buttons) {
                                     if (btn.innerText.includes('Claim Renewal')) {
                                         btn.click();
-                                        return true;
+                                        break;
                                     }
                                 }
-                                return false;
                             })();
                             """
                             clicked_claim = sb.execute_script(js_claim_script)
