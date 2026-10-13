@@ -1,8 +1,8 @@
 name: Orihost Auto Renew
 
 on:
- # schedule:
- #   - cron: '0 8 * * *' # 每天北京时间下午 16:00 运行（UTC 08:00）
+  schedule:
+    - cron: '0 8 * * *' # 每天北京时间下午 16:00 运行（UTC 08:00）
   workflow_dispatch:     # 支持手动触发
 
 jobs:
@@ -21,15 +21,118 @@ jobs:
       - name: Install dependencies
         run: |
           python -m pip install --upgrade pip
-          pip install seleniumbase requests
+          pip install seleniumbase requests pysocks
 
+      - name: 安装并启动代理 (Xray VLESS+XHTTP TLS)
+        env:
+          PROXY_NODE: ${{ secrets.PROXY_NODE }}
+        run: |
+          if [ -z "$PROXY_NODE" ]; then
+            echo "[INFO] 未配置代理，尝试直连模式..."
+            exit 0
+          fi
+
+          # 1. 下载并安装 Xray 核心 (带 API 限流容错防护)
+          TAG=$(curl -s --max-time 10 https://api.github.com/repos/XTLS/Xray-core/releases/latest | grep '"tag_name":' | sed -E 's/.*"([^"]+)".*/\1/')
+          if [ -z "$TAG" ]; then
+            echo "[WARN] 获取最新版本失败（可能触发 GitHub API 限流），正在重试重定向解析..."
+            TAG=$(curl -sI https://github.com/XTLS/Xray-core/releases/latest | grep -i "^location:" | sed -E 's/.*tag\/(.*)/\1/' | tr -d '\r\n')
+          fi
+          if [ -z "$TAG" ]; then
+            echo "[WARN] 解析失败，使用保底稳定版本 v24.11.30"
+            TAG="v24.11.30"
+          fi
+
+          echo "[INFO] 使用 Xray 版本: ${TAG}"
+          wget -q "https://github.com/XTLS/Xray-core/releases/download/${TAG}/Xray-linux-64.zip" || { echo "[ERROR] Xray 下载失败"; exit 1; }
+        
+          # 加 -o 参数强制覆盖，避免同名文件 (如 README.md) 导致交互卡死
+          unzip -o -q Xray-linux-64.zip
+          chmod +x xray
+
+          # 2. 解析 VLESS+XHTTP 节点并生成 config.json
+          python3 << 'PYEOF'
+          import os, json
+          from urllib.parse import urlparse, parse_qs, unquote
+
+          url = os.environ.get("PROXY_NODE", "").strip()
+          p = urlparse(url)
+          params = {k: v[0] for k, v in parse_qs(p.query).items()}
+
+          raw_auth = unquote(p.netloc.split('@')[0] if '@' in p.netloc else "")
+          uuid = raw_auth or p.username
+          server = p.hostname
+          port = int(p.port or 443)
+          sni = params.get("sni", server)
+          path = unquote(params.get("path", "/"))
+          host = params.get("host", sni)
+
+          # 动态读取链接中的跳过证书校验设置
+          insecure_param = params.get("allowInsecure", params.get("insecure", "")).lower()
+          allow_insecure = insecure_param in ["1", "true", "yes"]
+
+          xhttp_settings = {
+              "path": path,
+              "host": host
+          }
+          if params.get("mode"):
+              xhttp_settings["mode"] = params.get("mode")
+
+          tls_settings = {
+              "serverName": sni
+          }
+          if allow_insecure:
+              tls_settings["allowInsecure"] = True
+
+          outbound = {
+              "protocol": "vless",
+              "settings": {
+                  "vnext": [{
+                      "address": server,
+                      "port": port,
+                      "users": [{"id": uuid, "encryption": "none"}]
+                  }]
+              },
+              "streamSettings": {
+                  "network": "xhttp",
+                  "security": "tls",
+                  "tlsSettings": tls_settings,
+                  "xhttpSettings": xhttp_settings
+              }
+          }
+
+          config = {
+              "log": {"loglevel": "info"},
+              "inbounds": [{"port": 10808, "protocol": "socks", "settings": {"auth": "noauth"}}],
+              "outbounds": [outbound]
+          }
+
+          with open("config.json", "w") as f:
+              json.dump(config, f, indent=2)
+          PYEOF
+
+          # 3. 后台运行并等待握手
+          ./xray run -c config.json > proxy.log 2>&1 &
+          echo "[INFO] 正在等待代理建立连接 (15秒)..."
+          sleep 15
+
+          # 4. 连通性最终验证
+          if curl -x socks5://127.0.0.1:10808 -s --max-time 15 https://www.google.com > /dev/null; then
+            echo "[INFO] ✅ 代理适配成功！"
+            echo "PROXY_SOCKS5=socks5://127.0.0.1:10808" >> $GITHUB_ENV
+          else
+            echo "[ERROR] ❌ 代理连接失败。"
+            cat proxy.log
+            exit 1
+          fi 
+          
       - name: Run Auto Renew Script
         env:
           LOGIN_URL: ${{ secrets.LOGIN_URL }}
           API_SERVER_URL: ${{ secrets.API_SERVER_URL }}
           SERVER_PANEL_URL: ${{ secrets.SERVER_PANEL_URL }}
-          ORIHOST_EMAIL: ${{ secrets.ORIHOST_EMAIL }}
-          ORIHOST_PASSWORD: ${{ secrets.ORIHOST_PASSWORD }}
+          ORI_EMAIL: ${{ secrets.ORI_EMAIL }}
+          ORI_PASSWORD: ${{ secrets.ORI_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
         run: |
