@@ -75,7 +75,7 @@ def remove_ads(sb):
         print(f"[广告清除] 执行时出现异常: {e}")
 
 def handle_login_turnstile(sb):
-    """登录页面的 CF 验证处理逻辑（保持原版绝对正常）"""
+    """登录页面的 CF 验证处理逻辑"""
     try:
         for attempt in range(1, 6):
             print(f"[INFO] ⏱️ [登录CF第 {attempt} 轮] 检查验证状态...")
@@ -110,47 +110,55 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """针对该特定 Turnstile 结构的精准点击与验证处理"""
+    """带严格前置元素查找与状态诊断的第二个人机验证处理逻辑"""
     try:
-        for attempt in range(1, 8):
-            print(f"[INFO] ⏱️ [对话框CF第 {attempt} 轮] 尝试定位并点击验证复选框...")
+        for attempt in range(1, 10):
+            print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
             
+            # 1. 严格的前置元素检查：看页面上有没有出现目标元素
+            has_checkbox = sb.is_element_present('input[type="checkbox"]')
+            has_label = sb.is_element_present('label.fXVnL4')
+            has_response_input = sb.is_element_present('input[name="cf-turnstile-response"]')
+            
+            print(f"[DIAGNOSTIC] 查找元素状态 -> checkbox存在: {has_checkbox}, label存在: {has_label}, response输入框存在: {has_response_input}")
+            
+            # 2. 如果输入框已经有 Token，说明已经成功通过了
+            if has_response_input:
+                try:
+                    token_val = sb.execute_script("return document.querySelector(\"input[name='cf-turnstile-response']\").value;")
+                    if token_val and len(token_val) > 10:
+                        print(f"[INFO] ✅ 检测到 Token 已生成，第二个人机验证已成功通过！")
+                        return True
+                except Exception:
+                    pass
+
+            # 3. 如果元素还没找到，说明弹窗或人机组件还在加载中，继续等待
+            if not has_checkbox and not has_label:
+                print(f"[INFO] ⏳ 目标验证元素尚未加载出来，等待 3 秒再找...")
+                sb.sleep(3)
+                continue
+
+            # 4. 确定找到了元素，开始执行安全滚动与点击
+            print(f"[INFO] 🎯 成功锁定目标元素，准备执行点击...")
             try:
-                # 1. 优先尝试直接定位并点击复选框或其包裹标签
-                if sb.is_element_present('input[type="checkbox"]'):
+                if has_checkbox:
                     sb.scroll_to('input[type="checkbox"]')
                     sb.click('input[type="checkbox"]')
-                    print("[INFO] 🖱️ 已通过原生选择器点击复选框")
-                elif sb.is_element_present('label.fXVnL4'):
+                    print("[INFO] 🖱️ 已成功点击 input[type='checkbox']")
+                elif has_label:
                     sb.scroll_to('label.fXVnL4')
                     sb.click('label.fXVnL4')
-                    print("[INFO] 🖱️ 已通过原生选择器点击验证标签")
-                else:
-                    # 兜底：使用底层物理 GUI 点击
-                    print("[INFO] 🖱️ 未直接命中元素，触发 uc_gui_click_captcha()...")
-                    sb.uc_gui_click_captcha()
+                    print("[INFO] 🖱️ 已成功点击 label.fXVnL4")
             except Exception as e:
-                print(f"[WARN] 点击过程出现异常: {e}")
+                print(f"[WARN] 点击时发生异常: {e}")
+                try:
+                    sb.uc_gui_click_captcha()
+                except Exception:
+                    pass
 
-            time.sleep(4)
-
-            # 2. 检查验证是否成功通过（检查 response 输入框是否有 Token 生成）
-            try:
-                is_passed = sb.execute_script('''
-                    let inp = document.querySelector("input[name='cf-turnstile-response']");
-                    return inp && inp.value && inp.value.length > 0;
-                ''')
-                if is_passed:
-                    print("[INFO] ✅ 对话框内第二个 Cloudflare 人机验证已成功通过！")
-                    sb.sleep(2)
-                    return True
-            except Exception:
-                pass
-
-            print(f"[INFO] ⏳ [对话框CF第 {attempt} 轮] 验证尚未确认，准备重试...")
-            sb.sleep(3)
+            sb.sleep(4)
             
-        print("[WARN] ⚠️ 对话框 CF 验证超时未能确认通过。")
+        print("[WARN] ❌ 对话框内第二个人机验证在多次检查和操作后仍未通过。")
         try:
             sb.save_screenshot("debug_modal_turnstile.png")
             print("[INFO] 📸 已保存现场截图到 debug_modal_turnstile.png")
@@ -297,17 +305,18 @@ def main():
                 else:
                     print("提示：未能在弹窗中找到 Read Article 按钮。")
 
-                print("已点击 Read Article，等待 20 秒...")
-                time.sleep(20)
-                send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
+                # 点击 Read Article 按钮后等待时间已修改为 30 秒
+                print("已点击 Read Article，等待 30 秒...")
+                time.sleep(30)
+                send_telegram_photo(sb, "8_点击ReadArticle等待30秒后")
 
-                print("=== 6. 开始进行第二个人机验证诊断与处理 ===")
+                print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
                 remove_ads(sb)
                 passed = handle_modal_turnstile(sb)
                 
                 if not passed:
                     print("错误：对话框内的第二个 Cloudflare 人机验证未成功通过，终止程序！")
-                    send_telegram_photo(sb, "9_第二个人机验证未通过_诊断截图")
+                    send_telegram_photo(sb, "9_第二个人机验证未通过")
                     return
 
                 send_telegram_photo(sb, "9_完成第二个人机验证")
