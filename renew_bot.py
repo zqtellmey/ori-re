@@ -7,18 +7,21 @@ from seleniumbase import SB
 # Telegram 开关：True 为开启截图发送，False 为关闭
 ENABLE_TELEGRAM_SCREENSHOTS = True
 
+# 代理服务器配置
+PROXY_URL = "socks5://127.0.0.1:10808"
+
 # 从环境变量（GitHub Repository Secrets）中获取敏感网址和账号密码
 LOGIN_URL = os.getenv("LOGIN_URL")
 API_SERVER_URL = os.getenv("API_SERVER_URL")
 SERVER_PANEL_URL = os.getenv("SERVER_PANEL_URL")
-EMAIL = os.getenv("ORIHOST_EMAIL")
-PASSWORD = os.getenv("ORIHOST_PASSWORD")
+EMAIL = os.getenv("ORI_EMAIL")
+PASSWORD = os.getenv("ORI_PASSWORD")
 TG_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # ===============================================
 
 def send_telegram_photo(sb, step_name):
-    """如果开关打开，则截图并发送到 Telegram"""
+    """如果开关打开，则通过代理截图并发送到 Telegram"""
     if not ENABLE_TELEGRAM_SCREENSHOTS:
         return
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
@@ -30,11 +33,16 @@ def send_telegram_photo(sb, step_name):
         sb.save_screenshot(screenshot_path)
         
         url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendPhoto"
+        proxies = {
+            "http": PROXY_URL,
+            "https": PROXY_URL
+        }
         with open(screenshot_path, "rb") as photo_file:
             response = requests.post(
                 url,
                 data={"chat_id": TG_CHAT_ID, "caption": f"步骤截图: {step_name}"},
                 files={"photo": photo_file},
+                proxies=proxies,
                 timeout=30
             )
         if response.status_code == 200:
@@ -64,8 +72,8 @@ def remove_ads(sb):
         print(f"[广告清除] 执行时出现异常: {e}")
 
 def main():
-    # 使用 SeleniumBase 的 UC (Undetected ChromeDriver) 模式，开启有头模式 (headless=False)
-    with SB(uc=True, test=True, headless=False) as sb:
+    # 使用 SeleniumBase 的 UC (Undetected ChromeDriver) 模式，配置代理和有头模式 (headless=False)
+    with SB(uc=True, test=True, headless=False, proxy=PROXY_URL) as sb:
         print("=== 1. 访问登录页面 ===")
         remove_ads(sb)
         sb.open(LOGIN_URL)
@@ -86,8 +94,7 @@ def main():
             remove_ads(sb)
             print(f"尝试第 {attempt} 次点击 Cloudflare 验证...")
             try:
-                # 切换到 CF 验证的 iframe 内部或直接定位元素
-                sb.uc_gui_click_captcha() # SeleniumBase 内置的验证码辅助点击
+                sb.uc_gui_click_captcha()  # SeleniumBase 内置的验证码辅助点击
             except Exception:
                 try:
                     sb.click('input[type="checkbox"]')
@@ -119,6 +126,12 @@ def main():
         for cookie in cookies:
             session.cookies.set(cookie['name'], cookie['value'])
         
+        # 为 requests 会话设置 SOCKS5 代理
+        session.proxies = {
+            "http": PROXY_URL,
+            "https": PROXY_URL
+        }
+        
         headers = {
             "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
             "Accept": "application/json"
@@ -146,7 +159,6 @@ def main():
 
             print("寻找 Renew 按钮并点击...")
             remove_ads(sb)
-            # 通过按钮内的文字或 XPath 定位 Renew 按钮
             sb.click('button:has-text("Renew")')
             time.sleep(5)
             send_telegram_photo(sb, "6_点击Renew之后")
