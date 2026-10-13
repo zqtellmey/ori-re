@@ -110,14 +110,14 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """针对无 iframe 渲染形态的第二个人机验证：定位 input 父级并精准点击"""
+    """针对多层 div 嵌套的第二个人机验证：递归寻找 Turnstile 容器并模拟点击"""
     try:
         for attempt in range(1, 8):
             print(f"\n[DIAGNOSTIC] 🔍 --- [对话框CF排查第 {attempt} 轮] 开始诊断 ---")
             
-            # 1. 检测状态
+            # 1. 安全检测状态（使用标准的闭包包围返回）
             diag_info = sb.execute_script('''
-                (function() {
+                return (function() {
                     let info = {};
                     let inp = document.querySelector("input[name='cf-turnstile-response']");
                     info.has_input = (inp !== null);
@@ -141,42 +141,38 @@ def handle_modal_turnstile(sb):
                 print("[INFO] ✅ 复选框已勾选！")
                 return True
 
-            # 3. 定位 Turnstile 容器并滚动到可视中心
-            try:
-                sb.execute_script('''
-                    let inp = document.querySelector("input[name='cf-turnstile-response']");
-                    let el = inp ? inp.parentElement : document.querySelector('.cf-turnstile');
-                    if (el) {
-                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                    }
-                ''')
-                time.sleep(1)
-            except Exception as e:
-                print(f"[DIAGNOSTIC] ⚠️ 滚动异常: {e}")
-
-            # 4. 直接尝试用 JavaScript 强制点击其外层容器或复选框
-            print(f"[DIAGNOSTIC] 🖱️ 尝试通过 JS 模拟点击 Turnstile 容器...")
+            # 3. 向上顺藤摸瓜：穿透多层 div 找到 Turnstile 的外层容器并点击
+            print(f"[DIAGNOSTIC] 🖱️ 正在穿透多层 div 寻找并点击 Turnstile 容器...")
             clicked_via_js = sb.execute_script('''
-                let inp = document.querySelector("input[name='cf-turnstile-response']");
-                let container = inp ? inp.parentElement : document.querySelector('.cf-turnstile');
-                if (container) {
-                    // 模拟点击容器中央
-                    let rect = container.getBoundingClientRect();
-                    let evt = new MouseEvent('click', {
-                        view: window,
-                        bubbles: true,
-                        cancelable: true,
-                        clientX: rect.left + rect.width / 2,
-                        clientY: rect.top + rect.height / 2
-                    });
-                    container.dispatchEvent(evt);
-                    return true;
-                }
-                return false;
+                return (function() {
+                    let inp = document.querySelector("input[name='cf-turnstile-response']");
+                    if (!inp) return false;
+                    
+                    // 向上寻找合适的容器（跳过过小的子标签，寻找有足够宽高的父级 div 容器）
+                    let el = inp.parentElement;
+                    while (el && el !== document.body) {
+                        let rect = el.getBoundingClientRect();
+                        if (rect.width >= 200 && rect.height >= 40) {
+                            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                            // 模拟鼠标点击事件
+                            let evt = new MouseEvent('click', {
+                                view: window,
+                                bubbles: true,
+                                cancelable: true,
+                                clientX: rect.left + rect.width / 2,
+                                clientY: rect.top + rect.height / 2
+                            });
+                            el.dispatchEvent(evt);
+                            return true;
+                        }
+                        el = el.parentElement;
+                    }
+                    return false;
+                })();
             ''')
             
             if not clicked_via_js:
-                print(f"[DIAGNOSTIC] 🖱️ JS 未能点到，切换为 uc_gui_click_captcha()...")
+                print(f"[DIAGNOSTIC] 🖱️ JS 容器未找到，切换为 uc_gui_click_captcha()...")
                 try:
                     sb.uc_gui_click_captcha()
                 except Exception:
