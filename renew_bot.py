@@ -37,7 +37,6 @@ def send_telegram_photo(sb, step_name):
             "http": PROXY_URL,
             "https": PROXY_URL
         }
-        # 统一加上 [Ori] 前缀
         caption_text = f"[Ori] 步骤截图: {step_name}"
         with open(screenshot_path, "rb") as photo_file:
             response = requests.post(
@@ -164,7 +163,7 @@ def main():
         send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
 
         # 如果 renewable 为 true 并且剩余天数 <= 2，则执行续期
-        if renewable and renewal_days <= 7:
+        if renewable and renewal_days <= 2:
             print("满足续期条件，开始前往续期页面...")
             remove_ads(sb)
             sb.open(SERVER_PANEL_URL)
@@ -173,7 +172,35 @@ def main():
 
             print("寻找 Renew 按钮并点击...")
             remove_ads(sb)
-            sb.click('button:has-text("Renew")')
+            
+            # 使用多种稳妥方式尝试点击 Renew 按钮
+            clicked = False
+            try:
+                # 方式 1：通过 XPath 定位包含 Renew 文字的按钮
+                sb.click('xpath://button[contains(., "Renew")]')
+                clicked = True
+            except Exception:
+                try:
+                    # 方式 2：通过 JavaScript 查找并触发点击
+                    js_click_script = """
+                    const buttons = document.querySelectorAll('button');
+                    for (let btn of buttons) {
+                        if (btn.innerText.includes('Renew')) {
+                            btn.click();
+                            return true;
+                        }
+                    }
+                    return false;
+                    """
+                    clicked = sb.execute_script(js_click_script)
+                except Exception as e:
+                    print(f"点击 Renew 按钮时发生异常: {e}")
+
+            if clicked:
+                print("成功点击 Renew 按钮。")
+            else:
+                print("警告：未能通过常规方式找到 Renew 按钮。")
+
             time.sleep(5)
             send_telegram_photo(sb, "7_点击Renew之后")
 
