@@ -57,7 +57,7 @@ def send_telegram_photo(sb, step_name):
         print(f"[Telegram] 发送截图异常: {e}")
 
 def remove_ads(sb):
-    """去广告模块：每次进行任何操作前先调用一次，删除指定的浮动 iframe 广告"""
+    """去广告模块：精简逻辑，删除指定的浮动 iframe 广告"""
     try:
         ad_script = """
         (function() {
@@ -110,7 +110,7 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """支持 Shadow DOM 及多层 iframe 穿透的弹窗人机验证处理函数"""
+    """针对弹窗内 Cloudflare Turnstile 的精准 iframe 穿透处理函数"""
     try:
         for attempt in range(1, 6):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
@@ -131,50 +131,36 @@ def handle_modal_turnstile(sb):
                 except Exception:
                     pass
 
-            # 2. 深度递归穿透函数（支持 Shadow DOM 和 iframe）
-            print(f"[INFO] 🎯 正在执行 Shadow DOM 及 iframe 深度穿透扫描与点击...")
-            clicked = sb.execute_script("""
-                (function() {
-                    function deepQueryClick(root) {
-                        let cb = root.querySelector ? root.querySelector('input[type="checkbox"]') : null;
-                        if (cb) {
-                            cb.click();
-                            return "Clicked Shadow/Main checkbox";
-                        }
-                        let allElements = root.querySelectorAll ? root.querySelectorAll('*') : [];
-                        for (let el of allElements) {
-                            if (el.shadowRoot) {
-                                let res = deepQueryClick(el.shadowRoot);
-                                if (res) return res;
-                            }
-                        }
-                        return null;
-                    }
+            # 2. 尝试显式寻找并切入 Turnstile 对应的 iframe 内部进行点击
+            print(f"[INFO] 🎯 正在寻找 Cloudflare 验证 iframe 并尝试点击...")
+            clicked = False
+            try:
+                iframes = sb.find_elements("iframe")
+                for index, frame in enumerate(iframes):
+                    src = frame.get_attribute("src") or ""
+                    if "challenges.cloudflare.com" in src or "turnstile" in src:
+                        print(f"[INFO] 找到了目标验证 iframe (索引: {index})，准备切入...")
+                        sb.switch_to_frame(frame)
+                        if sb.is_element_present('input[type="checkbox"]'):
+                            sb.click('input[type="checkbox"]')
+                            clicked = True
+                            print("[INFO] 成功点击了 iframe 内的验证复选框！")
+                        else:
+                            sb.execute_script("let box = document.querySelector('body'); if(box) box.click();")
+                            clicked = True
+                            print("[INFO] 已通过 JS 触发 iframe 内部点击。")
+                        
+                        sb.switch_to_default_content()
+                        break
+            except Exception as e:
+                print(f"[DEBUG] iframe 交互过程提示: {e}")
+                try:
+                    sb.switch_to_default_content()
+                except:
+                    pass
 
-                    let result = deepQueryClick(document);
-                    if (result) return result;
-
-                    let iframes = document.querySelectorAll('iframe');
-                    for (let f of iframes) {
-                        try {
-                            let innerDoc = f.contentDocument || f.contentWindow.document;
-                            if (innerDoc) {
-                                let innerResult = deepQueryClick(innerDoc);
-                                if (innerResult) return "Iframe: " + innerResult;
-                            }
-                        } catch(e) {}
-                    }
-
-                    return false;
-                })();
-            """)
-
-            print(f"[DIAGNOSTIC] 深度穿透扫描结果: {clicked}")
-
-            if clicked and clicked != "false":
-                print(f"[INFO] 🖱️ 成功穿透并触发点击: {clicked}")
-            else:
-                print(f"[INFO] 🖱️ 脚本未能直接命中，触发 SeleniumBase 底层 GUI 物理点击兜底...")
+            if not clicked:
+                print(f"[INFO] 🖱️ 未能直接切入 iframe，触发 SeleniumBase 底层 GUI 物理点击兜底...")
                 try:
                     sb.uc_gui_click_captcha()
                 except Exception as e:
@@ -182,6 +168,7 @@ def handle_modal_turnstile(sb):
 
             sb.sleep(4)
             
+            # 3. 再次校验 Token
             if sb.is_element_present('input[name="cf-turnstile-response"]'):
                 try:
                     token_val = sb.execute_script("""
@@ -294,11 +281,9 @@ def main():
 
             if has_renew_button:
                 print("检测到 Renew 按钮，准备点击...")
-                remove_ads(sb)
                 try:
                     sb.click('xpath://button[contains(., "Renew")]')
                 except Exception:
-                    remove_ads(sb)
                     sb.execute_script("""
                         const buttons = document.querySelectorAll('button');
                         for (let btn of buttons) {
@@ -313,7 +298,6 @@ def main():
                 send_telegram_photo(sb, "7_点击Renew之后")
 
                 print("检查并点击弹窗中的 Read Article 按钮...")
-                remove_ads(sb)
                 
                 clicked_read_article = False
                 try:
@@ -321,7 +305,6 @@ def main():
                     clicked_read_article = True
                 except Exception:
                     try:
-                        remove_ads(sb)
                         js_read_script = """
                         (function() {
                             const buttons = document.querySelectorAll('button');
@@ -343,24 +326,37 @@ def main():
                 else:
                     print("提示：未能在弹窗中找到 Read Article 按钮。")
 
-                print("已点击 Read Article，等待 25 秒后转储当前页面的源码分析...")
+                print("已点击 Read Article，等待 25 秒后转储当前页面的源码并发送至 Telegram...")
                 time.sleep(25)
                 send_telegram_photo(sb, "8_点击ReadArticle等待25秒后")
 
-                # 转储当前网页源码到本地文件以便肉眼排查
+                # 转储当前网页源码，并直接通过 Telegram 发送文件
                 try:
                     page_html = sb.get_page_source()
                     dump_filename = f"page_dump_{int(time.time())}.html"
                     with open(dump_filename, "w", encoding="utf-8") as f:
                         f.write(page_html)
-                    print(f"[INFO] 📄 当前页面源码已成功转储到本地文件: {dump_filename}")
+                    print(f"[INFO] 📄 当前页面源码已成功转储: {dump_filename}")
+
+                    if ENABLE_TELEGRAM_SCREENSHOTS and TG_BOT_TOKEN and TG_CHAT_ID:
+                        doc_url = f"https://api.telegram.org/bot{TG_BOT_TOKEN}/sendDocument"
+                        proxies = {"http": PROXY_URL, "https": PROXY_URL}
+                        with open(dump_filename, "rb") as doc_file:
+                            requests.post(
+                                doc_url,
+                                data={"chat_id": TG_CHAT_ID, "caption": f"[Ori] 25秒后页面源码Dump: {dump_filename}"},
+                                files={"document": doc_file},
+                                proxies=proxies,
+                                timeout=30
+                            )
+                        print("[Telegram] 已成功将源码 HTML 文件发送至 Telegram！")
                 except Exception as e:
-                    print(f"[WARN] 转储源码失败: {e}")
+                    print(f"[WARN] 转储或发送源码异常: {e}")
 
                 print("=== 6. 严格检查并处理对话框内的第二个 Cloudflare 人机验证 ===")
                 remove_ads(sb)
                 
-                # 严格的前置校验：确保页面上确实存在验证元素或目标容器，否则直接拦截报错
+                # 严格的前置校验：确保页面上确实存在验证元素或目标容器
                 element_found = sb.execute_script("""
                     (function() {
                         let respInput = document.querySelector('input[name="cf-turnstile-response"]');
@@ -398,7 +394,6 @@ def main():
                     clicked_claim = True
                 except Exception:
                     try:
-                        remove_ads(sb)
                         js_claim_script = """
                         (function() {
                             const buttons = document.querySelectorAll('button');
