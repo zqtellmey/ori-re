@@ -1,6 +1,7 @@
 import os
 import time
 import platform
+import random
 import requests
 from seleniumbase import SB
 
@@ -76,96 +77,85 @@ def remove_ads(sb):
         print(f"[广告清除] 执行时出现异常: {e}")
 
 
-# ==================== 高级弹窗 Turnstile 过检核心模块 ====================
-RESET_TS_JS = """
-try {
-    if (typeof turnstile !== 'undefined') {
-        turnstile.reset();
-        return 1;
-    }
-} catch(e) {}
-return 0;
-"""
-
-MARK_TS_JS = """
-var inp = document.querySelector('input[name="cf-turnstile-response"]');
-var el = inp ? inp.parentElement : null;
-while(el && el !== document.body && (el.offsetWidth < 250 || el.offsetHeight < 50)) {
-    el = el.parentElement;
-}
-if(!el || el === document.body){
-    var f = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
-    el = f || null;
-}
-if(!el) return null;
-el.scrollIntoView({block: 'center'});
-el.setAttribute('data-hark-ts', '1');
-var r = el.getBoundingClientRect();
-return [r.left, r.top, r.width, r.height];
-"""
-
-def rerender_detached(sb, secs=8):
-    """重置 widget 后立刻断开 webdriver，让它在'干净'状态下重新渲染。"""
+# ==================== 移植自成功版本的 CF 高级过检模块 ====================
+def expand_turnstile(sb):
+    """把被盖住/压缩的验证框展开（overflow/尺寸修复），免得点不到"""
     try:
-        sb.execute_script(RESET_TS_JS)
+        sb.execute_script("""
+            document.querySelectorAll('.cf-turnstile').forEach(function(c) {
+                c.style.overflow = 'visible'; c.style.width = '300px'; c.style.height = '65px';
+            });
+            document.querySelectorAll('iframe').forEach(function(f) {
+                if (f.src && f.src.includes('challenges.cloudflare.com')) {
+                    f.style.width = '300px'; f.style.height = '65px';
+                    f.style.visibility = 'visible'; f.style.opacity = '1';
+                }
+            });
+        """)
     except Exception:
         pass
-    try:
-        sb.reconnect(secs)
-    except Exception:
-        sb.sleep(secs)
 
-def click_turnstile_box(sb):
-    """自己算复选框的屏幕坐标再用系统鼠标点，避免 uc_gui_click_captcha 在弹窗里点错。"""
-    rect = sb.execute_script(MARK_TS_JS)
-    if not rect:
-        print("[INFO] 没找到 Turnstile 容器，退回常规 uc_gui_click_captcha")
-        sb.uc_gui_click_captcha()
-        return
-    sb.sleep(1)
-    rect = sb.execute_script(
-        "var r = document.querySelector('[data-hark-ts]').getBoundingClientRect();"
-        "return [r.left, r.top, r.width, r.height];"
-    )
-    w = sb.driver.get_window_rect()
-    inner_h = sb.execute_script("return window.innerHeight;")
-    x = w["x"] + rect[0] + 30
-    y = w["y"] + w["height"] - inner_h + rect[1] + rect[3] / 2.0
-    print(f"[INFO] Turnstile 容器 {[int(v) for v in rect]}，精确点击屏幕坐标 ({int(x)}, {int(y)})")
-    sb.uc_gui_click_x_y(x, y)
-
-def pass_modal_turnstile(sb, timeout=90):
-    """系统级鼠标精准点弹窗中的 Turnstile，直到拿到 token 或通过"""
-    end = time.time() + 20
-    while time.time() < end and not sb.is_element_present('iframe[src*="challenges.cloudflare.com"]'):
-        sb.sleep(1)
-    sb.sleep(3)
+def handle_cloudflare_robust(sb, timeout=60):
+    """融合了成功版本思路的稳健 CF 过检：展开框 + 容器坐标物理点击 + token 实时检测"""
+    iframe_selector = 'iframe[src*="challenges.cloudflare.com"]'
     
-    start, clicks = time.time(), 0
-    while time.time() - start < timeout:
-        token_passed = sb.execute_script('''
-            let inp = document.querySelector('input[name="cf-turnstile-response"]');
-            return inp && inp.value && inp.value.length > 0;
-        ''')
-        if token_passed:
-            print(f"[INFO] ✅ 对话框内 Turnstile 已通过（点击了 {clicks} 次）")
-            return True
+    start_time = time.time()
+    while time.time() - start_time < timeout:
+        # 1. 检查是否已经生成 token 或者是已通过状态
+        try:
+            token = sb.execute_script('return document.querySelector("[name=cf-turnstile-response]")?.value || "";')
+            if token and len(token) > 20:
+                print("[INFO] ✅ Cloudflare Turnstile token 已生成，验证通过！")
+                return True
+        except Exception:
+            pass
+
+        if not sb.is_element_present(iframe_selector):
+            # 如果连 iframe 都没了，说明可能已经过掉或还没加载出来，稍微等一下
+            sb.sleep(1)
+            continue
+
+        print("[INFO] 🛡️ 检测到 Cloudflare 验证，正在准备过检...")
+        expand_turnstile(sb)
+
+        # 2. 计算 Turnstile 容器的绝对坐标进行精准物理点击
+        try:
+            rect = sb.execute_script("""
+                var inp = document.querySelector('input[name="cf-turnstile-response"]');
+                var el = inp ? inp.parentElement : null;
+                while(el && el !== document.body && (el.offsetWidth < 250 || el.offsetHeight < 50)) {
+                    el = el.parentElement;
+                }
+                if(!el || el === document.body){
+                    var f = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
+                    el = f || null;
+                }
+                if(!el) return null;
+                el.scrollIntoView({block: 'center'});
+                var r = el.getBoundingClientRect();
+                return [r.left, r.top, r.width, r.height];
+            """)
             
-        if clicks < 4 and (clicks == 0 or time.time() - start > clicks * 20):
-            if clicks >= 2:
-                print("[INFO] 🔄 执行 rerender_detached 重置并断开渲染...")
-                rerender_detached(sb)
+            if rect:
+                w = sb.driver.get_window_rect()
+                inner_h = sb.execute_script("return window.innerHeight;")
+                x = w["x"] + rect[0] + 40 + random.uniform(-5, 5)
+                y = w["y"] + w["height"] - inner_h + rect[1] + rect[3] / 2.0 + random.uniform(-3, 3)
+                print(f"[INFO] ⚡ 正在通过 uc_gui_click_x_y 精准点击坐标: ({int(x)}, {int(y)})")
+                sb.uc_gui_click_x_y(x, y)
+            else:
+                print("[INFO] ⚡ 未能精准计算坐标，改用默认 uc_gui_click_captcha()")
+                sb.uc_gui_click_captcha()
+        except Exception as e:
+            print(f"[WARN] 物理点击异常: {e}")
             try:
-                if clicks >= 2:
-                    click_turnstile_box(sb)
-                else:
-                    sb.uc_gui_click_captcha()
-            except Exception as e:
-                print(f"[WARN] 点击异常: {e}")
-            clicks += 1
-            if clicks == 1:
-                sb.sleep(4)
-        sb.sleep(2)
+                sb.uc_gui_click_captcha()
+            except Exception:
+                pass
+
+        sb.sleep(4)
+
+    print("[WARN] ⚠️ Cloudflare 验证超时。")
     return False
 # =========================================================================
 
@@ -201,36 +191,8 @@ def main():
             send_telegram_photo(sb, "2_输入账号密码")
 
             print("=== 3. 处理登录 Cloudflare 人机验证 ===")
-            # 完美恢复您最开始验证通过的稳定登录过检逻辑
-            for attempt in range(1, 5):
-                remove_ads(sb)
-                print(f"尝试第 {attempt} 次点击登录 CF 验证...")
-                try:
-                    sb.uc_gui_click_captcha()
-                except Exception:
-                    try:
-                        remove_ads(sb)
-                        sb.click('input[type="checkbox"]')
-                    except Exception:
-                        pass
-                
-                time.sleep(3)
-                
-                is_checked = False
-                try:
-                    is_checked = sb.is_checked('input[type="checkbox"]')
-                except Exception:
-                    try:
-                        is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
-                    except Exception:
-                        pass
-
-                if is_checked:
-                    print("登录 Cloudflare 人机验证已通过！")
-                    break
-                else:
-                    print("验证尚未通过，准备重试...")
-
+            remove_ads(sb)
+            handle_cloudflare_robust(sb, timeout=45)
             send_telegram_photo(sb, "3_完成登录人机验证")
 
             print("=== 4. 点击 Sign In 按钮 ===")
@@ -352,9 +314,9 @@ def main():
                     time.sleep(20)
                     send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
 
-                    print("=== 6. 使用高级精准定位与断开渲染机制处理对话框内的第二个 Cloudflare 人机验证 ===")
+                    print("=== 6. 使用成功版本的稳健逻辑处理对话框内的第二个 Cloudflare 人机验证 ===")
                     remove_ads(sb)
-                    passed = pass_modal_turnstile(sb)
+                    passed = handle_cloudflare_robust(sb, timeout=60)
                     
                     if not passed:
                         print("错误：对话框内的第二个 Cloudflare 人机验证未成功通过，严格终止程序！")
@@ -382,7 +344,6 @@ def main():
                                         return true;
                                     }
                                 }
-                                return false;
                             })();
                             """
                             clicked_claim = sb.execute_script(js_claim_script)
