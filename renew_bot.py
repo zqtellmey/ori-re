@@ -110,9 +110,9 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """高耐性动态轮询与防重置点击的第二个人机验证处理逻辑"""
+    """基于绝对 XPath 与多重策略的高耐性第二个人机验证处理逻辑"""
     try:
-        # 将轮询次数扩大到 20 次，给予充足的对峙和等待时间
+        # 将轮询扩大到 20 次，给予充足的等待时间
         for attempt in range(1, 21):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
             
@@ -127,31 +127,29 @@ def handle_modal_turnstile(sb):
                 except Exception:
                     pass
 
-            # 2. 动态实时检查验证框或复选框是否已经渲染出来
-            checkbox_xpath = '//label/input[@type="checkbox"]'
-            has_checkbox = sb.is_element_present(f'xpath:{checkbox_xpath}')
-            has_label = sb.is_element_present('label.fXVnL4')
+            # 2. 使用你提供的全 XPath 及其他备用选择器检查元素是否存在
+            abs_xpath = '/html/body//div/div/div[1]/div/label/input'
+            has_checkbox = sb.is_element_present(f'xpath:{abs_xpath}')
             
-            print(f"[DIAGNOSTIC] 实时状态 -> checkbox存在: {has_checkbox}, label存在: {has_label}, response输入框存在: {has_response_input}")
+            # 备用：如果在弹窗内部，也可以直接用 JS 全局找 type="checkbox"
+            if not has_checkbox:
+                has_checkbox = sb.is_element_present('input[type="checkbox"]')
 
-            if not has_checkbox and not has_label:
-                print(f"[INFO] ⏳ 验证框尚未加载或正在重新加载，继续耐心等待...")
+            print(f"[DIAGNOSTIC] 状态检测 -> 绝对XPath目标存在: {has_checkbox}, response输入框存在: {has_response_input}")
+
+            if not has_checkbox:
+                print(f"[INFO] ⏳ 验证框尚未加载出来，继续耐性等待...")
                 sb.sleep(3)
                 continue
 
-            # 3. 抓到了刚渲染出来的验证框，立即果断点击！
-            print(f"[INFO] 🎯 捕捉到已渲染的验证框，准备执行点击...")
+            # 3. 抓到了！立刻通过绝对 XPath 或 JS 点击
+            print(f"[INFO] 🎯 成功通过绝对 XPath 捕捉到验证框，准备执行点击...")
             try:
-                if has_checkbox:
-                    sb.scroll_to(f'xpath:{checkbox_xpath}')
-                    sb.click(f'xpath:{checkbox_xpath}')
-                    print("[INFO] 🖱️ 已成功点击复选框")
-                elif has_label:
-                    sb.scroll_to('label.fXVnL4')
-                    sb.click('label.fXVnL4')
-                    print("[INFO] 🖱️ 已成功点击验证标签")
+                sb.scroll_to(f'xpath:{abs_xpath}')
+                sb.click(f'xpath:{abs_xpath}')
+                print("[INFO] 🖱️ 已成功点击绝对路径下的复选框")
             except Exception as e:
-                print(f"[WARN] 点击时发生异常，尝试使用 JS 强制触发: {e}")
+                print(f"[WARN] 原生点击异常，尝试 JS 强制触发: {e}")
                 try:
                     sb.execute_script('''
                         let cb = document.querySelector('input[type="checkbox"]');
