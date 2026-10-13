@@ -1,7 +1,7 @@
 import os
 import time
 import requests
-from seleniumbase === None # 保持纯净引入
+from seleniumbase import SB
 
 # ==================== 配置区 ====================
 # Telegram 开关：True 为开启截图发送，False 为关闭
@@ -19,8 +19,6 @@ PASSWORD = os.getenv("ORI_PASSWORD")
 TG_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # ===============================================
-
-from seleniumbase import SB
 
 def send_telegram_photo(sb, step_name):
     """如果开关打开，则通过代理截图并发送到 Telegram，统一加上 [Ori] 前缀"""
