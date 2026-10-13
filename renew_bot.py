@@ -110,18 +110,8 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """源码转储与排查逻辑（5 轮）"""
+    """地毯式全上下文深度穿透点击：支持主文档、所有 iframe 内部及自定义动态弹窗"""
     try:
-        # 进入时立刻把当前页面的源码打印出来，彻底查明当前究竟在哪个页面、有没有 iframe 干扰
-        print("\n================ [DEBUG: 当前页面源码转储开始] ================")
-        try:
-            page_source = sb.get_page_source()
-            # 打印前 3000 个字符，防止日志被撑爆，但足够看清关键结构
-            print(page_source[:3000])
-            print("...\n[DEBUG: 当前页面源码转储结束 ================")
-        except Exception as e:
-            print(f"[DEBUG] 打印源码异常: {e}")
-
         for attempt in range(1, 6):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
             
@@ -136,32 +126,57 @@ def handle_modal_turnstile(sb):
                 except Exception:
                     pass
 
-            # 2. 检查 Cancel 按钮或任何按钮
-            has_cancel = sb.is_element_present('xpath://button[contains(., "Cancel")]')
-            print(f"[DIAGNOSTIC] 周边定位 -> Cancel按钮存在: {has_cancel}, response输入框存在: {has_response_input}")
-
-            if not has_cancel:
-                print(f"[INFO] ⏳ 弹窗和 Cancel 按钮尚未加载出来，等待 3 秒...")
-                sb.sleep(3)
-                continue
-
-            # 3. 找到 Cancel 按钮后尝试触发
-            print(f"[INFO] 🎯 已捕获到弹窗锚点，正在强制触发验证框点击...")
+            # 2. 地毯式全景深度点击脚本（同时扫描主页面和所有 iframe 内部）
+            print(f"[INFO] 🎯 正在执行全文档及子框架深度扫描与点击...")
             clicked = sb.execute_script('''
-                let cb = document.querySelector('input[type="checkbox"]') || document.querySelector('label.fXVnL4');
-                if (cb) {
-                    cb.click();
-                    return true;
-                }
-                return false;
+                (function() {
+                    // 方法 A：在主文档中直接找 checkbox 或 特定 label
+                    let cb = document.querySelector('input[type="checkbox"]');
+                    if (cb) { cb.click(); return "Clicked main checkbox"; }
+                    
+                    let labels = document.querySelectorAll('label');
+                    for (let l of labels) {
+                        if (l.innerText.includes('真人') || l.innerText.includes('Verify') || l.innerText.includes('请验证')) {
+                            l.click();
+                            return "Clicked label: " + l.innerText;
+                        }
+                    }
+
+                    // 方法 B：如果主文档没有，深入到页面所有的 iframe 内部去寻找
+                    let iframes = document.querySelectorAll('iframe');
+                    for (let f of iframes) {
+                        try {
+                            let innerDoc = f.contentDocument || f.contentWindow.document;
+                            let innerCb = innerDoc.querySelector('input[type="checkbox"]');
+                            if (innerCb) {
+                                innerCb.click();
+                                return "Clicked iframe checkbox";
+                            }
+                            let innerLabels = innerDoc.querySelectorAll('label');
+                            for (let il of innerLabels) {
+                                if (il.innerText.includes('真人') || il.innerText.includes('Verify')) {
+                                    il.click();
+                                    return "Clicked iframe label";
+                                }
+                            }
+                        } catch(e) {}
+                    }
+                    return false;
+                })();
             ''')
 
-            if not clicked:
+            print(f"[DIAGNOSTIC] JS 深度扫描结果: {clicked}")
+
+            if clicked and clicked != "false":
+                print(f"[INFO] 🖱️ 成功触发目标点击: {clicked}")
+            else:
+                print(f"[INFO] 🖱️ 未能通过 JS 命中，触发底层物理 GUI 点击兜底...")
                 try:
                     sb.uc_gui_click_captcha()
                 except Exception:
                     pass
 
+            # 等待 4 秒观察响应
             sb.sleep(4)
             
         print("[WARN] ❌ 对话框内第二个人机验证在 5 轮排查后仍未通过。")
