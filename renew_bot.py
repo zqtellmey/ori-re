@@ -159,7 +159,7 @@ def main():
         print(f"服务器状态检查 -> renewable: {renewable}, renewal 剩余天数: {renewal_days}")
         send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
 
-        # 如果 renewable 为 true 并且剩余天数符合条件（测试时可设为 <= 7，实际使用建议改为 <= 2）
+        # 如果 renewable 为 true 并且剩余天数符合条件（测试时可设为 <= 7，实际使用建议 <= 2）
         if renewable and renewal_days <= 7:
             print("满足续期条件，开始前往续期页面...")
             remove_ads(sb)
@@ -243,40 +243,39 @@ def main():
                 time.sleep(20)
                 send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
 
-                print("=== 6. 检测并处理 Read Article 之后的第二个 Cloudflare 人机验证 ===")
+                print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
                 time.sleep(3)
                 second_captcha_passed = False
                 
                 for attempt in range(1, 6):
                     remove_ads(sb)
                     
-                    # 首先严格检查页面或 iframe 中是否存在人机验证元素
-                    element_found_script = """
-                    (function() {
-                        let cb = document.querySelector('input[type="checkbox"]');
-                        if (cb) return true;
-                        let iframes = document.querySelectorAll('iframe');
-                        for (let f of iframes) {
-                            try {
-                                let innerCb = f.contentDocument.querySelector('input[type="checkbox"]');
-                                if (innerCb) return true;
-                            } catch(err) {}
-                        }
-                        return false;
-                    })();
-                    """
+                    # 检查当前页面及所有 iframe / 对话框内部是否存在验证元素
                     element_exists = False
                     try:
-                        element_exists = sb.execute_script(element_found_script)
+                        element_exists = sb.execute_script("""
+                        (function() {
+                            let cb = document.querySelector('input[type="checkbox"]');
+                            if (cb) return true;
+                            let iframes = document.querySelectorAll('iframe');
+                            for (let f of iframes) {
+                                try {
+                                    let innerCb = f.contentDocument.querySelector('input[type="checkbox"]');
+                                    if (innerCb) return true;
+                                } catch(err) {}
+                            }
+                            return false;
+                        })();
+                        """)
                     except Exception:
                         pass
 
                     if not element_exists:
-                        print(f"第 {attempt} 次检测：页面上尚未出现第二个 CF 人机验证元素，继续等待加载...")
+                        print(f"第 {attempt} 次检测：对话框中尚未出现 CF 人机验证元素，继续等待...")
                         time.sleep(4)
                         continue
 
-                    print(f"检测到第二个 CF 人机验证元素存在，开始第 {attempt} 次尝试处理...")
+                    print(f"检测到对话框中的 CF 人机验证元素，开始第 {attempt} 次尝试处理...")
                     try:
                         sb.uc_gui_click_captcha()
                     except Exception:
@@ -288,7 +287,6 @@ def main():
                     except Exception:
                         pass
                     
-                    # 通过 JS 辅助点击（主文档或 iframe 内）
                     try:
                         sb.execute_script("""
                             (function() {
@@ -308,7 +306,6 @@ def main():
 
                     time.sleep(4)
                     
-                    # 检查是否已勾选通过
                     is_checked = False
                     try:
                         is_checked = sb.is_checked('input[type="checkbox"]')
@@ -335,15 +332,14 @@ def main():
                             pass
 
                     if is_checked:
-                        print("第二个 Cloudflare 人机验证已通过（检测到 Checkbox 已勾选）！")
+                        print("对话框中的第二个 Cloudflare 人机验证已通过（检测到 Checkbox 已勾选）！")
                         second_captcha_passed = True
                         break
                     else:
                         print(f"第 {attempt} 次验证尚未通过，准备重试...")
 
-                # 如果压根没找到元素或者重试后没通过，则安全终止
                 if not second_captcha_passed:
-                    print("错误：未找到第二个 Cloudflare 人机验证元素或验证未通过，严格终止程序！")
+                    print("错误：对话框中的第二个 Cloudflare 人机验证未通过或未出现，严格终止程序！")
                     send_telegram_photo(sb, "9_第二个人机验证未通过或未出现")
                     return
 
@@ -378,7 +374,7 @@ def main():
                 if clicked_claim:
                     print("成功点击 Claim Renewal 按钮。")
                 else:
-                    print("提示：未能在页面上找到 Claim Renewal 按钮。")
+                    print("提示：未能在对话框中找到 Claim Renewal 按钮。")
 
                 # 点击 Claim Renewal 后等待 5 秒
                 print("等待 5 秒后查询续期结果...")
