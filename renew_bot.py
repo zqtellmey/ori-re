@@ -110,19 +110,14 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """使用精准 XPath 定位并处理第二个人机验证"""
+    """高耐性动态轮询与防重置点击的第二个人机验证处理逻辑"""
     try:
-        for attempt in range(1, 10):
+        # 将轮询次数扩大到 20 次，给予充足的对峙和等待时间
+        for attempt in range(1, 21):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
             
-            # 1. 使用你提供的结构特征（XPath）来精准查找 checkbox
-            checkbox_xpath = '//label/input[@type="checkbox"]'
-            has_checkbox = sb.is_element_present(f'xpath:{checkbox_xpath}')
+            # 1. 检查 Token 是否已经生成
             has_response_input = sb.is_element_present('input[name="cf-turnstile-response"]')
-            
-            print(f"[DIAGNOSTIC] 精准XPath查找 -> 目标复选框存在: {has_checkbox}, response输入框存在: {has_response_input}")
-            
-            # 2. 检查 Token 是否已生成
             if has_response_input:
                 try:
                     token_val = sb.execute_script("return document.querySelector(\"input[name='cf-turnstile-response']\").value;")
@@ -132,32 +127,43 @@ def handle_modal_turnstile(sb):
                 except Exception:
                     pass
 
-            # 3. 如果还没找到复选框，稍作等待
-            if not has_checkbox:
-                print(f"[INFO] ⏳ 目标验证复选框尚未加载出来，等待 3 秒再找...")
+            # 2. 动态实时检查验证框或复选框是否已经渲染出来
+            checkbox_xpath = '//label/input[@type="checkbox"]'
+            has_checkbox = sb.is_element_present(f'xpath:{checkbox_xpath}')
+            has_label = sb.is_element_present('label.fXVnL4')
+            
+            print(f"[DIAGNOSTIC] 实时状态 -> checkbox存在: {has_checkbox}, label存在: {has_label}, response输入框存在: {has_response_input}")
+
+            if not has_checkbox and not has_label:
+                print(f"[INFO] ⏳ 验证框尚未加载或正在重新加载，继续耐心等待...")
                 sb.sleep(3)
                 continue
 
-            # 4. 锁定目标后，执行滚动并使用 JS 强制点击（避免被遮挡或点偏）
-            print(f"[INFO] 🎯 成功通过 XPath 锁定复选框，准备执行点击...")
+            # 3. 抓到了刚渲染出来的验证框，立即果断点击！
+            print(f"[INFO] 🎯 捕捉到已渲染的验证框，准备执行点击...")
             try:
-                sb.scroll_to(f'xpath:{checkbox_xpath}')
-                # 优先使用原生点击
-                sb.click(f'xpath:{checkbox_xpath}')
-                print("[INFO] 🖱️ 已成功点击目标复选框")
+                if has_checkbox:
+                    sb.scroll_to(f'xpath:{checkbox_xpath}')
+                    sb.click(f'xpath:{checkbox_xpath}')
+                    print("[INFO] 🖱️ 已成功点击复选框")
+                elif has_label:
+                    sb.scroll_to('label.fXVnL4')
+                    sb.click('label.fXVnL4')
+                    print("[INFO] 🖱️ 已成功点击验证标签")
             except Exception as e:
-                print(f"[WARN] 原生点击异常，尝试 JS 强制点击: {e}")
+                print(f"[WARN] 点击时发生异常，尝试使用 JS 强制触发: {e}")
                 try:
                     sb.execute_script('''
-                        let cb = document.querySelector('label input[type="checkbox"]') || document.querySelector('input[type="checkbox"]');
-                        if (cb) { cb.click(); }
+                        let cb = document.querySelector('input[type="checkbox"]');
+                        if (cb) cb.click();
                     ''')
                 except Exception:
                     pass
 
-            sb.sleep(4)
+            # 点击后暂停 3 秒，等待 Cloudflare 响应验证结果
+            sb.sleep(3)
             
-        print("[WARN] ❌ 对话框内第二个人机验证在多次检查和操作后仍未通过。")
+        print("[WARN] ❌ 对话框内第二个人机验证在长时间轮询后仍未通过。")
         try:
             sb.save_screenshot("debug_modal_turnstile.png")
             print("[INFO] 📸 已保存现场截图到 debug_modal_turnstile.png")
@@ -304,10 +310,10 @@ def main():
                 else:
                     print("提示：未能在弹窗中找到 Read Article 按钮。")
 
-                # 点击 Read Article 按钮后等待时间已修改为 30 秒
-                print("已点击 Read Article，等待 30 秒...")
-                time.sleep(30)
-                send_telegram_photo(sb, "8_点击ReadArticle等待30秒后")
+                # 将初始等待时间延长到 55 秒，确保给验证框完整的预热加载时间
+                print("已点击 Read Article，等待 55 秒让验证框完全渲染加载...")
+                time.sleep(55)
+                send_telegram_photo(sb, "8_点击ReadArticle等待55秒后")
 
                 print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
                 remove_ads(sb)
