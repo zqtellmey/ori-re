@@ -74,8 +74,31 @@ def remove_ads(sb):
     except Exception as e:
         print(f"[广告清除] 执行时出现异常: {e}")
 
+# --- 借鉴成功的双重循环 CF 穿透机制 ---
+def handle_turnstile(sb):
+    """通过检测 input[name='cf-turnstile-response'] 状态并调度物理点击来完美过检"""
+    try:
+        for attempt in range(1, 3):
+            print(f"[INFO] ⏱️ [第 {attempt} 轮检测] 等待 5 秒让 Cloudflare 验证框加载...")
+            sb.sleep(5)
+            
+            has_turnstile = sb.execute_script('return document.querySelector("input[name=\'cf-turnstile-response\']") !== null')
+            
+            if has_turnstile:
+                print(f"[INFO] 🛡️ [第 {attempt} 轮] 发现 Cloudflare Turnstile 人机验证框！")
+                print(f"[INFO] ⚡ [第 {attempt} 轮] 正在启动物理级 uc_gui_click_captcha() 穿透点击...")
+                sb.uc_gui_click_captcha()
+                print(f"[INFO] ⏳ [第 {attempt} 轮] 物理点击完成，等待 5 秒让状态同步...")
+                sb.sleep(5)
+            else:
+                print(f"[INFO] 🟢 [第 {attempt} 轮] 当前视图未检测到 CF 拦截框。")
+        return True
+    except Exception as e:
+        print(f"[WARN] 穿透 CF 验证时发生异常: {e}")
+        return False
+
 def main():
-    # 使用 SeleniumBase 的 UC (Undetected ChromeDriver) 模式，配置代理和有头模式 (headless=False)
+    # 使用 SeleniumBase 的 UC 模式，配置代理和有头模式
     with SB(uc=True, test=True, headless=False, proxy=PROXY_URL) as sb:
         print("=== 1. 访问登录页面 ===")
         remove_ads(sb)
@@ -92,41 +115,16 @@ def main():
         send_telegram_photo(sb, "2_输入账号密码")
 
         print("=== 3. 处理登录 Cloudflare 人机验证 ===")
-        for attempt in range(1, 5):
-            remove_ads(sb)
-            print(f"尝试第 {attempt} 次点击登录 CF 验证...")
-            try:
-                sb.uc_gui_click_captcha()
-            except Exception:
-                try:
-                    remove_ads(sb)
-                    sb.click('input[type="checkbox"]')
-                except Exception:
-                    pass
-            
-            time.sleep(3)
-            
-            is_checked = False
-            try:
-                is_checked = sb.is_checked('input[type="checkbox"]')
-            except Exception:
-                try:
-                    is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
-                except Exception:
-                    pass
-
-            if is_checked:
-                print("登录 Cloudflare 人机验证已通过！")
-                break
-            else:
-                print("验证尚未通过，准备重试...")
-
+        remove_ads(sb)
+        handle_turnstile(sb)
         send_telegram_photo(sb, "3_完成登录人机验证")
 
         print("=== 4. 点击 Sign In 按钮 ===")
         remove_ads(sb)
         sb.click('button[type="submit"]')
         time.sleep(5)
+        # 登录提交后防止有二次拦截，再过一遍 CF
+        handle_turnstile(sb)
         send_telegram_photo(sb, "4_登录后主页")
 
         print("=== 5. 通过 API 获取服务器状态 ===")
@@ -243,65 +241,10 @@ def main():
                 time.sleep(20)
                 send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
 
-                print("=== 6. 处理对话框内 Turnstile iframe 中的第二个 Cloudflare 人机验证 ===")
-                time.sleep(3)
-                second_captcha_passed = False
-                
-                for attempt in range(1, 6):
-                    remove_ads(sb)
-                    print(f"尝试第 {attempt} 次处理对话框内的 CF 验证...")
-
-                    # 1. 尝试使用内置辅助点击
-                    try:
-                        sb.uc_gui_click_captcha()
-                    except Exception:
-                        pass
-
-                    # 2. 专门切入 Turnstile iframe 内部进行点击与状态检测
-                    try:
-                        # 查找包含 turnstile 的 iframe
-                        if sb.is_element_visible('iframe[src*="turnstile"]'):
-                            sb.switch_to_frame('iframe[src*="turnstile"]')
-                            try:
-                                sb.click('input[type="checkbox"]')
-                            except Exception:
-                                sb.execute_script("let cb = document.querySelector('input[type=\"checkbox\"]'); if(cb) cb.click();")
-                            
-                            # 检查 iframe 内部的复选框是否已被勾选
-                            is_checked = False
-                            try:
-                                is_checked = sb.is_checked('input[type="checkbox"]')
-                            except Exception:
-                                try:
-                                    is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
-                                except Exception:
-                                    pass
-
-                            # 切回主文档
-                            sb.switch_to_default_content()
-
-                            if is_checked:
-                                print("对话框内第二个 Cloudflare 人机验证已通过！")
-                                second_captcha_passed = True
-                                break
-                    except Exception as e:
-                        print(f"操作 Turnstile iframe 时出现异常: {e}")
-                        try:
-                            sb.switch_to_default_content()
-                        except:
-                            pass
-
-                    if second_captcha_passed:
-                        break
-
-                    print(f"第 {attempt} 次验证尚未通过，准备重试...")
-                    time.sleep(4)
-
-                if not second_captcha_passed:
-                    print("错误：对话框中的第二个 Cloudflare 人机验证未通过或未找到元素，严格终止程序！")
-                    send_telegram_photo(sb, "9_第二个人机验证未通过或未出现")
-                    return
-
+                print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
+                # 直接无缝调用经过验证的成熟 Turnstile 穿透逻辑
+                remove_ads(sb)
+                handle_turnstile(sb)
                 send_telegram_photo(sb, "9_完成第二个人机验证")
 
                 print("=== 7. 点击 Claim Renewal 按钮 ===")
