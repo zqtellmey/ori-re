@@ -1,5 +1,7 @@
 import os
+import sys
 import time
+import platform
 import requests
 from seleniumbase import SB
 
@@ -109,267 +111,321 @@ def handle_login_turnstile(sb):
         print(f"[WARN] 登录 CF 验证异常: {e}")
         return False
 
-def handle_modal_turnstile(sb):
-    """对话框内的 CF 验证：直接复用与登录页完全一致的成熟过检逻辑"""
+
+# ==================== 高级弹窗 Turnstile 过检核心模块 ====================
+RESET_TS_JS = """
+try {
+    if (typeof turnstile !== 'undefined') {
+        turnstile.reset();
+        return 1;
+    }
+} catch(e) {}
+return 0;
+"""
+
+MARK_TS_JS = """
+var inp = document.querySelector('input[name="cf-turnstile-response"]');
+var el = inp ? inp.parentElement : null;
+while(el && el !== document.body && (el.offsetWidth < 250 || el.offsetHeight < 50)) {
+    el = el.parentElement;
+}
+if(!el || el === document.body){
+    var f = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
+    el = f || null;
+}
+if(!el) return null;
+el.scrollIntoView({block: 'center'});
+el.setAttribute('data-hark-ts', '1');
+var r = el.getBoundingClientRect();
+return [r.left, r.top, r.width, r.height];
+"""
+
+def rerender_detached(sb, secs=8):
+    """重置 widget 后立刻断开 webdriver，让它在'干净'状态下重新渲染。"""
     try:
-        for attempt in range(1, 6):
-            print(f"[INFO] ⏱️ [对话框CF第 {attempt} 轮] 检查弹窗中的人机验证...")
-            
-            has_turnstile = sb.execute_script('''
-                (function() {
-                    if (document.querySelector("input[name='cf-turnstile-response']") !== null) return true;
-                    let iframes = document.querySelectorAll('iframe');
-                    for (let f of iframes) {
-                        try {
-                            if (f.contentDocument && f.contentDocument.querySelector("input[name='cf-turnstile-response']") !== null) return true;
-                        } catch(e) {}
-                    }
-                    return false;
-                })();
-            ''')
-            
-            if has_turnstile:
-                print(f"[INFO] 🛡️ [对话框CF第 {attempt} 轮] 发现弹窗中的验证框，触发点击...")
-                sb.uc_gui_click_captcha()
-                sb.sleep(4)
-            else:
-                print(f"[INFO] 🟢 [对话框CF第 {attempt} 轮] 未检测到验证输入框。")
+        sb.execute_script(RESET_TS_JS)
+    except Exception:
+        pass
+    try:
+        sb.reconnect(secs)
+    except Exception:
+        sb.sleep(secs)
 
-            is_passed = sb.execute_script('''
-                (function() {
-                    let respInput = document.querySelector("input[name='cf-turnstile-response']");
-                    if (respInput && respInput.value && respInput.value.length > 0) return true;
-                    
-                    let iframes = document.querySelectorAll('iframe');
-                    for (let f of iframes) {
-                        try {
-                            let innerDoc = f.contentDocument || f.contentWindow.document;
-                            let innerResp = innerDoc.querySelector("input[name='cf-turnstile-response']");
-                            if (innerResp && innerResp.value && innerResp.value.length > 0) return true;
-                            let innerCb = innerDoc.querySelector('input[type="checkbox"]');
-                            if (innerCb && innerCb.checked) return true;
-                        } catch(err) {}
-                    }
-                    return false;
-                })();
-            ''')
+def click_turnstile_box(sb):
+    """自己算复选框的屏幕坐标再用系统鼠标点，避免 uc_gui_click_captcha 在弹窗里点错。"""
+    rect = sb.execute_script(MARK_TS_JS)
+    if not rect:
+        print("[INFO] 没找到 Turnstile 容器，退回常规 uc_gui_click_captcha")
+        sb.uc_gui_click_captcha()
+        return
+    sb.sleep(1)
+    rect = sb.execute_script(
+        "var r = document.querySelector('[data-hark-ts]').getBoundingClientRect();"
+        "return [r.left, r.top, r.width, r.height];"
+    )
+    w = sb.driver.get_window_rect()
+    inner_h = sb.execute_script("return window.innerHeight;")
+    x = w["x"] + rect[0] + 30
+    y = w["y"] + w["height"] - inner_h + rect[1] + rect[3] / 2.0
+    print(f"[INFO] Turnstile 容器 {[int(v) for v in rect]}，精确点击屏幕坐标 ({int(x)}, {int(y)})")
+    sb.uc_gui_click_x_y(x, y)
 
-            if is_passed:
-                print("[INFO] ✅ 对话框内第二个 Cloudflare 人机验证已成功通过！")
-                sb.sleep(2)
-                return True
-            else:
-                print(f"[INFO] ⏳ [对话框CF第 {attempt} 轮] 验证还在进行中，继续等待...")
+def pass_modal_turnstile(sb, timeout=90):
+    """系统级鼠标精准点 Turnstile，直到拿到 token 或通过"""
+    # 1. 等待 iframe 出现
+    end = time.time() + 20
+    while time.time() < end and not sb.is_element_present('iframe[src*="challenges.cloudflare.com"]'):
+        sb.sleep(1)
+    sb.sleep(3)
+    
+    start, clicks = time.time(), 0
+    while time.time() - start < timeout:
+        # 检查是否已拿到 token
+        token_passed = sb.execute_script('''
+            let inp = document.querySelector('input[name="cf-turnstile-response"]');
+            return inp && inp.value && inp.value.length > 0;
+        ''')
+        if token_passed:
+            print(f"[INFO] ✅ 对话框内 Turnstile 已通过（点击了 {clicks} 次）")
+            return True
+            
+        if clicks < 4 and (clicks == 0 or time.time() - start > clicks * 20):
+            if clicks >= 2:
+                print("[INFO] 🔄 执行 rerender_detached 重置并断开渲染...")
+                rerender_detached(sb)
+            try:
+                if clicks >= 2:
+                    click_turnstile_box(sb)
+                else:
+                    sb.uc_gui_click_captcha()
+            except Exception as e:
+                print(f"[WARN] 点击异常: {e}")
+            clicks += 1
+            if clicks == 1:
                 sb.sleep(4)
-                
-        print("[WARN] ⚠️ 对话框 CF 验证超时未能确认通过。")
-        return False
-    except Exception as e:
-        print(f"[WARN] 处理对话框 CF 验证时发生异常: {e}")
-        return False
+        sb.sleep(2)
+    return False
+# =========================================================================
 
 def main():
-    with SB(uc=True, test=True, headless=False, proxy=PROXY_URL) as sb:
-        print("=== 1. 访问登录页面 ===")
-        remove_ads(sb)
-        sb.open(LOGIN_URL)
-        time.sleep(3)
-        send_telegram_photo(sb, "1_访问登录页面")
+    display = None
+    if platform.system().lower() == "linux" and not os.environ.get("DISPLAY"):
+        try:
+            from pyvirtualdisplay import Display
+            display = Display(visible=False, size=(1280, 2400))
+            display.start()
+            os.environ["DISPLAY"] = display.new_display_var
+            print("[INFO] 🖥️ Xvfb 虚拟纵向长屏桌面已成功启动 (1280x2400)")
+        except Exception as e:
+            print(f"[ERROR] 虚拟显示启动失败: {e}")
 
-        print("=== 2. 输入登录信息 ===")
-        remove_ads(sb)
-        sb.type('input[name="username"]', EMAIL)
-        time.sleep(1)
-        sb.type('input[name="password"]', PASSWORD)
-        time.sleep(1)
-        send_telegram_photo(sb, "2_输入账号密码")
+    try:
+        with SB(uc=True, test=True, headless=False, proxy=PROXY_URL) as sb:
+            sb.driver.set_window_size(1280, 2400)
+            sb.driver.set_page_load_timeout(40)
 
-        print("=== 3. 处理登录 Cloudflare 人机验证 ===")
-        remove_ads(sb)
-        handle_login_turnstile(sb)
-        send_telegram_photo(sb, "3_完成登录人机验证")
-
-        print("=== 4. 点击 Sign In 按钮 ===")
-        remove_ads(sb)
-        sb.click('button[type="submit"]')
-        time.sleep(6)
-        # 登录提交后直接进入主页，不再重复检测 CF
-        send_telegram_photo(sb, "4_登录后主页")
-
-        print("=== 5. 通过 API 获取服务器状态 ===")
-        cookies = sb.get_cookies()
-        session = requests.Session()
-        for cookie in cookies:
-            session.cookies.set(cookie['name'], cookie['value'])
-        
-        session.proxies = {
-            "http": PROXY_URL,
-            "https": PROXY_URL
-        }
-        
-        headers = {
-            "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
-            "Accept": "application/json"
-        }
-        
-        response = session.get(API_SERVER_URL, headers=headers)
-        if response.status_code != 200:
-            print(f"API 请求失败，状态码: {response.status_code}")
-            send_telegram_photo(sb, "5_API请求失败")
-            return
-            
-        data = response.json()
-        attributes = data.get("attributes", {})
-        renewable = attributes.get("renewable", False)
-        renewal_days = attributes.get("renewal", 999)
-        
-        print(f"服务器状态检查 -> renewable: {renewable}, renewal 剩余天数: {renewal_days}")
-        send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
-
-        # 如果 renewable 为 true 并且剩余天数符合条件（测试时可设为 <= 7，实际使用 <= 2）
-        if renewable and renewal_days <= 7:
-            print("满足续期条件，开始前往续期页面...")
+            print("=== 1. 访问登录页面 ===")
             remove_ads(sb)
-            sb.open(SERVER_PANEL_URL)
+            sb.open(LOGIN_URL)
             time.sleep(3)
-            send_telegram_photo(sb, "6_到达服务器详情页")
+            send_telegram_photo(sb, "1_访问登录页面")
 
-            print("检查页面上是否存在 Renew 按钮...")
+            print("=== 2. 输入登录信息 ===")
             remove_ads(sb)
-            
-            has_renew_button = False
-            try:
-                js_check_script = """
-                (function() {
-                    const buttons = document.querySelectorAll('button');
-                    for (let btn of buttons) {
-                        if (btn.innerText.includes('Renew')) {
-                            return true;
-                        }
-                    }
-                    return false;
-                })();
-                """
-                has_renew_button = sb.execute_script(js_check_script)
-            except Exception:
-                has_renew_button = False
+            sb.type('input[name="username"]', EMAIL)
+            time.sleep(1)
+            sb.type('input[name="password"]', PASSWORD)
+            time.sleep(1)
+            send_telegram_photo(sb, "2_输入账号密码")
 
-            if has_renew_button:
-                print("检测到 Renew 按钮，准备点击...")
+            print("=== 3. 处理登录 Cloudflare 人机验证 ===")
+            remove_ads(sb)
+            handle_login_turnstile(sb)
+            send_telegram_photo(sb, "3_完成登录人机验证")
+
+            print("=== 4. 点击 Sign In 按钮 ===")
+            remove_ads(sb)
+            sb.click('button[type="submit"]')
+            time.sleep(6)
+            send_telegram_photo(sb, "4_登录后主页")
+
+            print("=== 5. 通过 API 获取服务器状态 ===")
+            cookies = sb.get_cookies()
+            session = requests.Session()
+            for cookie in cookies:
+                session.cookies.set(cookie['name'], cookie['value'])
+            
+            session.proxies = {
+                "http": PROXY_URL,
+                "https": PROXY_URL
+            }
+            
+            headers = {
+                "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36",
+                "Accept": "application/json"
+            }
+            
+            response = session.get(API_SERVER_URL, headers=headers)
+            if response.status_code != 200:
+                print(f"API 请求失败，状态码: {response.status_code}")
+                send_telegram_photo(sb, "5_API请求失败")
+                return
+                
+            data = response.json()
+            attributes = data.get("attributes", {})
+            renewable = attributes.get("renewable", False)
+            renewal_days = attributes.get("renewal", 999)
+            
+            print(f"服务器状态检查 -> renewable: {renewable}, renewal 剩余天数: {renewal_days}")
+            send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
+
+            if renewable and renewal_days <= 7:
+                print("满足续期条件，开始前往续期页面...")
                 remove_ads(sb)
+                sb.open(SERVER_PANEL_URL)
+                time.sleep(3)
+                send_telegram_photo(sb, "6_到达服务器详情页")
+
+                print("检查页面上是否存在 Renew 按钮...")
+                remove_ads(sb)
+                
+                has_renew_button = False
                 try:
-                    sb.click('xpath://button[contains(., "Renew")]')
-                except Exception:
-                    remove_ads(sb)
-                    sb.execute_script("""
+                    js_check_script = """
+                    (function() {
                         const buttons = document.querySelectorAll('button');
                         for (let btn of buttons) {
                             if (btn.innerText.includes('Renew')) {
-                                btn.click();
-                                break;
+                                return true;
                             }
                         }
-                    """)
-                
-                time.sleep(3)
-                send_telegram_photo(sb, "7_点击Renew之后")
-
-                print("检查并点击弹窗中的 Read Article 按钮...")
-                remove_ads(sb)
-                
-                clicked_read_article = False
-                try:
-                    sb.click('xpath://button[contains(., "Read Article")]')
-                    clicked_read_article = True
+                        return false;
+                    })();
+                    """
+                    has_renew_button = sb.execute_script(js_check_script)
                 except Exception:
+                    has_renew_button = False
+
+                if has_renew_button:
+                    print("检测到 Renew 按钮，准备点击...")
+                    remove_ads(sb)
                     try:
+                        sb.click('xpath://button[contains(., "Renew")]')
+                    except Exception:
                         remove_ads(sb)
-                        js_read_script = """
-                        (function() {
+                        sb.execute_script("""
                             const buttons = document.querySelectorAll('button');
                             for (let btn of buttons) {
-                                if (btn.innerText.includes('Read Article')) {
+                                if (btn.innerText.includes('Renew')) {
                                     btn.click();
-                                    return true;
+                                    break;
                                 }
                             }
-                            return false;
-                        })();
-                        """
-                        clicked_read_article = sb.execute_script(js_read_script)
-                    except Exception as e:
-                        print(f"点击 Read Article 按钮时发生异常: {e}")
+                        """)
+                    
+                    time.sleep(3)
+                    send_telegram_photo(sb, "7_点击Renew之后")
 
-                if clicked_read_article:
-                    print("成功点击 Read Article 按钮。")
-                else:
-                    print("提示：未能在弹窗中找到 Read Article 按钮。")
-
-                # 点击 Read Article 按钮后等待 20 秒
-                print("已点击 Read Article，等待 20 秒...")
-                time.sleep(20)
-                send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
-
-                print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
-                remove_ads(sb)
-                passed = handle_modal_turnstile(sb)
-                
-                if not passed:
-                    print("错误：对话框内的第二个 Cloudflare 人机验证未成功通过，严格终止程序！")
-                    send_telegram_photo(sb, "9_第二个人机验证未通过")
-                    return
-
-                send_telegram_photo(sb, "9_完成第二个人机验证")
-
-                print("=== 7. 点击 Claim Renewal 按钮 ===")
-                remove_ads(sb)
-                
-                clicked_claim = False
-                try:
-                    sb.click('xpath://button[contains(., "Claim Renewal")]')
-                    clicked_claim = True
-                except Exception:
+                    print("检查并点击弹窗中的 Read Article 按钮...")
+                    remove_ads(sb)
+                    
+                    clicked_read_article = False
                     try:
-                        remove_ads(sb)
-                        js_claim_script = """
-                        (function() {
-                            const buttons = document.querySelectorAll('button');
-                            for (let btn of buttons) {
-                                if (btn.innerText.includes('Claim Renewal')) {
-                                    btn.click();
-                                    return true;
+                        sb.click('xpath://button[contains(., "Read Article")]')
+                        clicked_read_article = True
+                    except Exception:
+                        try:
+                            remove_ads(sb)
+                            js_read_script = """
+                            (function() {
+                                const buttons = document.querySelectorAll('button');
+                                for (let btn of buttons) {
+                                    if (btn.innerText.includes('Read Article')) {
+                                        btn.click();
+                                        return true;
+                                    }
                                 }
-                            }
-                            return false;
-                        })();
-                        """
-                        clicked_claim = sb.execute_script(js_claim_script)
-                    except Exception as e:
-                        print(f"点击 Claim Renewal 按钮时发生异常: {e}")
+                                return false;
+                            })();
+                            """
+                            clicked_read_article = sb.execute_script(js_read_script)
+                        except Exception as e:
+                            print(f"点击 Read Article 按钮时发生异常: {e}")
 
-                if clicked_claim:
-                    print("成功点击 Claim Renewal 按钮。")
+                    if clicked_read_article:
+                        print("成功点击 Read Article 按钮。")
+                    else:
+                        print("提示：未能在弹窗中找到 Read Article 按钮。")
+
+                    # 点击 Read Article 按钮后等待 20 秒
+                    print("已点击 Read Article，等待 20 秒...")
+                    time.sleep(20)
+                    send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
+
+                    print("=== 6. 使用高级精准定位与断开渲染机制处理对话框内的第二个 Cloudflare 人机验证 ===")
+                    remove_ads(sb)
+                    passed = pass_modal_turnstile(sb)
+                    
+                    if not passed:
+                        print("错误：对话框内的第二个 Cloudflare 人机验证未成功通过，严格终止程序！")
+                        send_telegram_photo(sb, "9_第二个人机验证未通过")
+                        return
+
+                    send_telegram_photo(sb, "9_完成第二个人机验证")
+
+                    print("=== 7. 点击 Claim Renewal 按钮 ===")
+                    remove_ads(sb)
+                    
+                    clicked_claim = False
+                    try:
+                        sb.click('xpath://button[contains(., "Claim Renewal")]')
+                        clicked_claim = True
+                    except Exception:
+                        try:
+                            remove_ads(sb)
+                            js_claim_script = """
+                            (function() {
+                                const buttons = document.querySelectorAll('button');
+                                for (let btn of buttons) {
+                                    if (btn.innerText.includes('Claim Renewal')) {
+                                        btn.click();
+                                        return true;
+                                    }
+                                }
+                                return false;
+                            })();
+                            """
+                            clicked_claim = sb.execute_script(js_claim_script)
+                        except Exception as e:
+                            print(f"点击 Claim Renewal 按钮时发生异常: {e}")
+
+                    if clicked_claim:
+                        print("成功点击 Claim Renewal 按钮。")
+                    else:
+                        print("提示：未能在对话框中找到 Claim Renewal 按钮。")
+
+                    # 点击 Claim Renewal 后等待 5 秒
+                    print("等待 5 秒后查询续期结果...")
+                    time.sleep(5)
+                    send_telegram_photo(sb, "10_点击ClaimRenewal之后")
+
+                    print("再次通过 API 验证是否续期成功...")
+                    check_response = session.get(API_SERVER_URL, headers=headers)
+                    if check_response.status_code == 200:
+                        new_data = check_response.json().get("attributes", {})
+                        new_renewal_days = new_data.get("renewal")
+                        print(f"续期后的剩余天数: {new_renewal_days}")
+                        send_telegram_photo(sb, f"11_最终续期完成(新剩余天数{new_renewal_days}天)")
                 else:
-                    print("提示：未能在对话框中找到 Claim Renewal 按钮。")
-
-                # 点击 Claim Renewal 后等待 5 秒
-                print("等待 5 秒后查询续期结果...")
-                time.sleep(5)
-                send_telegram_photo(sb, "10_点击ClaimRenewal之后")
-
-                print("再次通过 API 验证是否续期成功...")
-                check_response = session.get(API_SERVER_URL, headers=headers)
-                if check_response.status_code == 200:
-                    new_data = check_response.json().get("attributes", {})
-                    new_renewal_days = new_data.get("renewal")
-                    print(f"续期后的剩余天数: {new_renewal_days}")
-                    send_telegram_photo(sb, f"11_最终续期完成(新剩余天数{new_renewal_days}天)")
+                    print("提示：当前页面未找到 Renew 按钮（可能还未到可续期时间或无需续期），跳过点击操作。")
+                    send_telegram_photo(sb, "7_未找到Renew按钮跳过")
             else:
-                print("提示：当前页面未找到 Renew 按钮（可能还未到可续期时间或无需续期），跳过点击操作。")
-                send_telegram_photo(sb, "7_未找到Renew按钮跳过")
-        else:
-            print("当前不需要续期（renewable 为 false 或剩余天数大于设定阈值）。")
-            send_telegram_photo(sb, "6_当前无需续期跳过操作")
+                print("当前不需要续期（renewable 为 false 或剩余天数大于设定阈值）。")
+                send_telegram_photo(sb, "6_当前无需续期跳过操作")
+    finally:
+        if display:
+            display.stop()
+            print("[INFO] 虚拟显示服务已释放")
 
 if __name__ == "__main__":
     main()
