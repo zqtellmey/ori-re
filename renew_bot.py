@@ -21,7 +21,7 @@ TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # ===============================================
 
 def send_telegram_photo(sb, step_name):
-    """如果开关打开，则通过代理截图并发送到 Telegram"""
+    """如果开关打开，则通过代理截图并发送到 Telegram，统一加上 [Ori] 前缀"""
     if not ENABLE_TELEGRAM_SCREENSHOTS:
         return
     if not TG_BOT_TOKEN or not TG_CHAT_ID:
@@ -37,10 +37,12 @@ def send_telegram_photo(sb, step_name):
             "http": PROXY_URL,
             "https": PROXY_URL
         }
+        # 统一加上 [Ori] 前缀
+        caption_text = f"[Ori] 步骤截图: {step_name}"
         with open(screenshot_path, "rb") as photo_file:
             response = requests.post(
                 url,
-                data={"chat_id": TG_CHAT_ID, "caption": f"步骤截图: {step_name}"},
+                data={"chat_id": TG_CHAT_ID, "caption": caption_text},
                 files={"photo": photo_file},
                 proxies=proxies,
                 timeout=30
@@ -105,7 +107,7 @@ def main():
             
             time.sleep(3)
             
-            # 检查 checkbox 是否已被勾选（使用正确的 sb.is_checked 方法或 JS 检查）
+            # 检查 checkbox 是否已被勾选
             is_checked = False
             try:
                 is_checked = sb.is_checked('input[type="checkbox"]')
@@ -150,6 +152,7 @@ def main():
         response = session.get(API_SERVER_URL, headers=headers)
         if response.status_code != 200:
             print(f"API 请求失败，状态码: {response.status_code}")
+            send_telegram_photo(sb, "5_API请求失败")
             return
             
         data = response.json()
@@ -158,28 +161,32 @@ def main():
         renewal_days = attributes.get("renewal", 999)
         
         print(f"服务器状态检查 -> renewable: {renewable}, renewal 剩余天数: {renewal_days}")
+        send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
 
         # 如果 renewable 为 true 并且剩余天数 <= 2，则执行续期
-        if renewable and renewal_days <= 2:
+        if renewable and renewal_days <= 7:
             print("满足续期条件，开始前往续期页面...")
             remove_ads(sb)
             sb.open(SERVER_PANEL_URL)
             time.sleep(3)
-            send_telegram_photo(sb, "5_到达服务器详情页")
+            send_telegram_photo(sb, "6_到达服务器详情页")
 
             print("寻找 Renew 按钮并点击...")
             remove_ads(sb)
             sb.click('button:has-text("Renew")')
             time.sleep(5)
-            send_telegram_photo(sb, "6_点击Renew之后")
+            send_telegram_photo(sb, "7_点击Renew之后")
 
             print("再次通过 API 验证是否续期成功...")
             check_response = session.get(API_SERVER_URL, headers=headers)
             if check_response.status_code == 200:
-                new_renewal_days = check_response.json().get("attributes", {}).get("renewal")
+                new_data = check_response.json().get("attributes", {})
+                new_renewal_days = new_data.get("renewal")
                 print(f"续期后的剩余天数: {new_renewal_days}")
+                send_telegram_photo(sb, f"8_续期完成(新剩余天数{new_renewal_days}天)")
         else:
             print("当前不需要续期（renewable 为 false 或剩余天数大于 2 天）。")
+            send_telegram_photo(sb, "6_当前无需续期跳过操作")
 
 if __name__ == "__main__":
     main()
