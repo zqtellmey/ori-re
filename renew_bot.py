@@ -110,19 +110,19 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """带严格前置元素查找与状态诊断的第二个人机验证处理逻辑"""
+    """使用精准 XPath 定位并处理第二个人机验证"""
     try:
         for attempt in range(1, 10):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
             
-            # 1. 严格的前置元素检查：看页面上有没有出现目标元素
-            has_checkbox = sb.is_element_present('input[type="checkbox"]')
-            has_label = sb.is_element_present('label.fXVnL4')
+            # 1. 使用你提供的结构特征（XPath）来精准查找 checkbox
+            checkbox_xpath = '//label/input[@type="checkbox"]'
+            has_checkbox = sb.is_element_present(f'xpath:{checkbox_xpath}')
             has_response_input = sb.is_element_present('input[name="cf-turnstile-response"]')
             
-            print(f"[DIAGNOSTIC] 查找元素状态 -> checkbox存在: {has_checkbox}, label存在: {has_label}, response输入框存在: {has_response_input}")
+            print(f"[DIAGNOSTIC] 精准XPath查找 -> 目标复选框存在: {has_checkbox}, response输入框存在: {has_response_input}")
             
-            # 2. 如果输入框已经有 Token，说明已经成功通过了
+            # 2. 检查 Token 是否已生成
             if has_response_input:
                 try:
                     token_val = sb.execute_script("return document.querySelector(\"input[name='cf-turnstile-response']\").value;")
@@ -132,27 +132,26 @@ def handle_modal_turnstile(sb):
                 except Exception:
                     pass
 
-            # 3. 如果元素还没找到，说明弹窗或人机组件还在加载中，继续等待
-            if not has_checkbox and not has_label:
-                print(f"[INFO] ⏳ 目标验证元素尚未加载出来，等待 3 秒再找...")
+            # 3. 如果还没找到复选框，稍作等待
+            if not has_checkbox:
+                print(f"[INFO] ⏳ 目标验证复选框尚未加载出来，等待 3 秒再找...")
                 sb.sleep(3)
                 continue
 
-            # 4. 确定找到了元素，开始执行安全滚动与点击
-            print(f"[INFO] 🎯 成功锁定目标元素，准备执行点击...")
+            # 4. 锁定目标后，执行滚动并使用 JS 强制点击（避免被遮挡或点偏）
+            print(f"[INFO] 🎯 成功通过 XPath 锁定复选框，准备执行点击...")
             try:
-                if has_checkbox:
-                    sb.scroll_to('input[type="checkbox"]')
-                    sb.click('input[type="checkbox"]')
-                    print("[INFO] 🖱️ 已成功点击 input[type='checkbox']")
-                elif has_label:
-                    sb.scroll_to('label.fXVnL4')
-                    sb.click('label.fXVnL4')
-                    print("[INFO] 🖱️ 已成功点击 label.fXVnL4")
+                sb.scroll_to(f'xpath:{checkbox_xpath}')
+                # 优先使用原生点击
+                sb.click(f'xpath:{checkbox_xpath}')
+                print("[INFO] 🖱️ 已成功点击目标复选框")
             except Exception as e:
-                print(f"[WARN] 点击时发生异常: {e}")
+                print(f"[WARN] 原生点击异常，尝试 JS 强制点击: {e}")
                 try:
-                    sb.uc_gui_click_captcha()
+                    sb.execute_script('''
+                        let cb = document.querySelector('label input[type="checkbox"]') || document.querySelector('input[type="checkbox"]');
+                        if (cb) { cb.click(); }
+                    ''')
                 except Exception:
                     pass
 
