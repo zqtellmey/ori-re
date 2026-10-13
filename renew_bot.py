@@ -164,7 +164,7 @@ def main():
         send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
 
         # 如果 renewable 为 true 并且剩余天数符合条件（测试时可设为 <= 7，实际使用建议改为 <= 2）
-        if renewable and renewal_days <= 2:
+        if renewable and renewal_days <= 7:
             print("满足续期条件，开始前往续期页面...")
             remove_ads(sb)
             sb.open(SERVER_PANEL_URL)
