@@ -110,33 +110,18 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """带详尽诊断与日志输出的第二个人机验证处理函数"""
+    """针对无 iframe 渲染形态的第二个人机验证：定位 input 父级并精准点击"""
     try:
         for attempt in range(1, 8):
             print(f"\n[DIAGNOSTIC] 🔍 --- [对话框CF排查第 {attempt} 轮] 开始诊断 ---")
             
-            # 1. 深度检测当前页面的元素状态
+            # 1. 检测状态
             diag_info = sb.execute_script('''
                 (function() {
                     let info = {};
                     let inp = document.querySelector("input[name='cf-turnstile-response']");
                     info.has_input = (inp !== null);
                     info.input_value = inp ? inp.value : null;
-                    
-                    let iframes = document.querySelectorAll('iframe');
-                    info.iframe_count = iframes.length;
-                    info.iframe_sources = [];
-                    let found_inner_cb = false;
-                    
-                    for (let f of iframes) {
-                        info.iframe_sources.push(f.src);
-                        try {
-                            let innerDoc = f.contentDocument || f.contentWindow.document;
-                            let innerCb = innerDoc.querySelector('input[type="checkbox"]');
-                            if (innerCb) found_inner_cb = true;
-                        } catch(e) {}
-                    }
-                    info.found_inner_checkbox = found_inner_cb;
                     
                     let mainCb = document.querySelector('input[type="checkbox"]');
                     info.main_checkbox_exists = (mainCb !== null);
@@ -149,28 +134,53 @@ def handle_modal_turnstile(sb):
             print(f"[DIAGNOSTIC] 📊 诊断结果: {diag_info}")
 
             # 2. 如果已经通过，直接返回
-            if diag_info.get("input_value") or diag_info.get("main_checkbox_checked"):
+            if diag_info.get("input_value") and len(diag_info.get("input_value")) > 10:
                 print("[INFO] ✅ 经诊断确认：第二个人机验证已成功通过！")
                 return True
+            if diag_info.get("main_checkbox_checked"):
+                print("[INFO] ✅ 复选框已勾选！")
+                return True
 
-            # 3. 滚动到对话框中的验证组件位置
+            # 3. 定位 Turnstile 容器并滚动到可视中心
             try:
                 sb.execute_script('''
-                    let widget = document.querySelector('.cf-turnstile') || document.querySelector('input[type="checkbox"]') || document.querySelector('iframe');
-                    if (widget) {
-                        widget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    let inp = document.querySelector("input[name='cf-turnstile-response']");
+                    let el = inp ? inp.parentElement : document.querySelector('.cf-turnstile');
+                    if (el) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
                     }
                 ''')
                 time.sleep(1)
             except Exception as e:
-                print(f"[DIAGNOSTIC] ⚠️ 滚动到元素位置异常: {e}")
+                print(f"[DIAGNOSTIC] ⚠️ 滚动异常: {e}")
 
-            # 4. 尝试执行点击
-            print(f"[DIAGNOSTIC] 🖱️ 正在执行 uc_gui_click_captcha() 物理点击...")
-            try:
-                sb.uc_gui_click_captcha()
-            except Exception as e:
-                print(f"[DIAGNOSTIC] ⚠️ 物理点击抛出异常: {e}")
+            # 4. 直接尝试用 JavaScript 强制点击其外层容器或复选框
+            print(f"[DIAGNOSTIC] 🖱️ 尝试通过 JS 模拟点击 Turnstile 容器...")
+            clicked_via_js = sb.execute_script('''
+                let inp = document.querySelector("input[name='cf-turnstile-response']");
+                let container = inp ? inp.parentElement : document.querySelector('.cf-turnstile');
+                if (container) {
+                    // 模拟点击容器中央
+                    let rect = container.getBoundingClientRect();
+                    let evt = new MouseEvent('click', {
+                        view: window,
+                        bubbles: true,
+                        cancelable: true,
+                        clientX: rect.left + rect.width / 2,
+                        clientY: rect.top + rect.height / 2
+                    });
+                    container.dispatchEvent(evt);
+                    return true;
+                }
+                return false;
+            ''')
+            
+            if not clicked_via_js:
+                print(f"[DIAGNOSTIC] 🖱️ JS 未能点到，切换为 uc_gui_click_captcha()...")
+                try:
+                    sb.uc_gui_click_captcha()
+                except Exception:
+                    pass
 
             time.sleep(4)
             
