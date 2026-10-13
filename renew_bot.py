@@ -92,6 +92,7 @@ def main():
         send_telegram_photo(sb, "2_输入账号密码")
 
         print("=== 3. 处理登录 Cloudflare 人机验证 ===")
+        login_captcha_passed = False
         for attempt in range(1, 5):
             remove_ads(sb)
             print(f"尝试第 {attempt} 次点击登录 CF 验证...")
@@ -117,9 +118,15 @@ def main():
 
             if is_checked:
                 print("登录 Cloudflare 人机验证已通过！")
+                login_captcha_passed = True
                 break
             else:
                 print("验证尚未通过，准备重试...")
+
+        if not login_captcha_passed:
+            print("错误：登录 Cloudflare 人机验证未通过，终止程序。")
+            send_telegram_photo(sb, "3_登录人机验证失败")
+            return
 
         send_telegram_photo(sb, "3_完成登录人机验证")
 
@@ -244,6 +251,7 @@ def main():
                 send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
 
                 print("=== 6. 处理 Read Article 之后的第二个 Cloudflare 人机验证 ===")
+                second_captcha_passed = False
                 for attempt in range(1, 5):
                     remove_ads(sb)
                     print(f"尝试第 {attempt} 次点击第二个 CF 验证...")
@@ -269,9 +277,15 @@ def main():
 
                     if is_checked:
                         print("第二个 Cloudflare 人机验证已通过！")
+                        second_captcha_passed = True
                         break
                     else:
                         print("验证尚未通过，准备重试...")
+
+                if not second_captcha_passed:
+                    print("错误：第二个 Cloudflare 人机验证未通过，严格终止程序，绝不点击 Claim Renewal！")
+                    send_telegram_photo(sb, "9_第二个人机验证失败")
+                    return
 
                 send_telegram_photo(sb, "9_完成第二个人机验证")
 
