@@ -110,23 +110,28 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """优化后的弹窗内 CF 验证处理：优先使用 uc_gui_click_captcha 保证真实物理点击"""
+    """优化后的弹窗内 CF 验证处理：安全捕获 Token 避免 JS 语法错误"""
     try:
         for attempt in range(1, 6):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
             
-            # 1. 检查 Token 是否已经生成
+            # 1. 检查 Token 是否已经生成（使用更安全的方式，不直接拼 return）
             has_response_input = sb.is_element_present('input[name="cf-turnstile-response"]')
             if has_response_input:
                 try:
-                    token_val = sb.execute_script("return document.querySelector(\"input[name='cf-turnstile-response']\").value;")
+                    token_val = sb.execute_script("""
+                        (function() {
+                            let el = document.querySelector("input[name='cf-turnstile-response']");
+                            return el ? el.value : '';
+                        })();
+                    """)
                     if token_val and len(token_val) > 10:
                         print(f"[INFO] ✅ 检测到 Token 已生成，第二个人机验证已成功通过！")
                         return True
                 except Exception:
                     pass
 
-            # 2. 直接调用 SeleniumBase 的 UC 模式图形验证点击，模拟真实人类点击 Turnstile 插件框
+            # 2. 调用 SeleniumBase 的 UC 模式图形验证点击，模拟真实人类点击 Turnstile 插件框
             print(f"[INFO] 🖱️ 触发 SeleniumBase 物理防机器人点击 (uc_gui_click_captcha)...")
             try:
                 sb.uc_gui_click_captcha()
@@ -136,12 +141,20 @@ def handle_modal_turnstile(sb):
             # 等待 4 秒观察响应
             sb.sleep(4)
             
-            # 再次校验是否通过
+            # 3. 再次校验是否通过
             if sb.is_element_present('input[name="cf-turnstile-response"]'):
-                token_val = sb.execute_script("let el = document.querySelector(\"input[name='cf-turnstile-response']\"); return el ? el.value : '';")
-                if token_val and len(token_val) > 10:
-                    print(f"[INFO] ✅ 验证成功，已捕获有效 Token！")
-                    return True
+                try:
+                    token_val = sb.execute_script("""
+                        (function() {
+                            let el = document.querySelector("input[name='cf-turnstile-response']");
+                            return el ? el.value : '';
+                        })();
+                    """)
+                    if token_val and len(token_val) > 10:
+                        print(f"[INFO] ✅ 验证成功，已捕获有效 Token！")
+                        return True
+                except Exception:
+                    pass
 
         print("[WARN] ❌ 对话框内第二个人机验证在 5 轮排查后仍未通过。")
         try:
