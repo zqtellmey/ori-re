@@ -110,12 +110,12 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """优化后的弹窗内 CF 验证处理：安全捕获 Token 避免 JS 语法错误"""
+    """针对动态 Portal 弹窗内 Cloudflare Turnstile 的增强处理"""
     try:
         for attempt in range(1, 6):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
             
-            # 1. 检查 Token 是否已经生成（使用更安全的方式，不直接拼 return）
+            # 1. 检查 Token 是否已经生成
             has_response_input = sb.is_element_present('input[name="cf-turnstile-response"]')
             if has_response_input:
                 try:
@@ -131,17 +131,32 @@ def handle_modal_turnstile(sb):
                 except Exception:
                     pass
 
-            # 2. 调用 SeleniumBase 的 UC 模式图形验证点击，模拟真实人类点击 Turnstile 插件框
-            print(f"[INFO] 🖱️ 触发 SeleniumBase 物理防机器人点击 (uc_gui_click_captcha)...")
+            # 2. 检查 #modal-portal 内部是否出现了 Turnstile 的 iframe 遮罩/组件
+            print(f"[INFO] 🎯 正在检查 #modal-portal 动态弹窗状态...")
+            portal_has_iframe = sb.execute_script("""
+                (function() {
+                    let portal = document.querySelector('#modal-portal');
+                    if (!portal) return false;
+                    let iframe = portal.querySelector('iframe');
+                    return iframe !== null;
+                })();
+            """)
+
+            if portal_has_iframe:
+                print(f"[INFO] 🛡️ 检测到 #modal-portal 内已加载验证 iframe，准备穿透点击...")
+            else:
+                print(f"[INFO] ⏳ 等待弹窗及验证组件完全加载...")
+
+            # 3. 触发 SeleniumBase 的 UC 模式图形验证点击
             try:
+                # 尝试指定在带有 challenge 或 iframe 的环境点击
                 sb.uc_gui_click_captcha()
             except Exception as e:
                 print(f"[DEBUG] uc_gui_click_captcha 执行提示: {e}")
 
-            # 等待 4 秒观察响应
             sb.sleep(4)
             
-            # 3. 再次校验是否通过
+            # 4. 再次校验 Token
             if sb.is_element_present('input[name="cf-turnstile-response"]'):
                 try:
                     token_val = sb.execute_script("""
