@@ -113,22 +113,20 @@ def handle_modal_turnstile(sb):
     """针对多层 div 嵌套的第二个人机验证：递归寻找 Turnstile 容器并模拟点击"""
     try:
         for attempt in range(1, 8):
-            print(f"\n[DIAGNOSTIC] 🔍 --- [对话框CF排查第 {attempt} 轮] 开始诊断 ---")
+            print(f"\n[DIAGNOSTIC] 🔍 --- [对话框CF排查第 1 轮] 开始诊断 ---")
             
-            # 1. 安全检测状态（使用标准的闭包包围返回）
+            # 1. 安全检测状态（SeleniumBase 内部会自动包裹，直接写表达式即可）
             diag_info = sb.execute_script('''
-                return (function() {
-                    let info = {};
-                    let inp = document.querySelector("input[name='cf-turnstile-response']");
-                    info.has_input = (inp !== null);
-                    info.input_value = inp ? inp.value : null;
-                    
-                    let mainCb = document.querySelector('input[type="checkbox"]');
-                    info.main_checkbox_exists = (mainCb !== null);
-                    info.main_checkbox_checked = mainCb ? mainCb.checked : false;
-                    
-                    return info;
-                })();
+                let info = {};
+                let inp = document.querySelector("input[name='cf-turnstile-response']");
+                info.has_input = (inp !== null);
+                info.input_value = inp ? inp.value : null;
+                
+                let mainCb = document.querySelector('input[type="checkbox"]');
+                info.main_checkbox_exists = (mainCb !== null);
+                info.main_checkbox_checked = mainCb ? mainCb.checked : false;
+                
+                return info;
             ''')
             
             print(f"[DIAGNOSTIC] 📊 诊断结果: {diag_info}")
@@ -144,31 +142,27 @@ def handle_modal_turnstile(sb):
             # 3. 向上顺藤摸瓜：穿透多层 div 找到 Turnstile 的外层容器并点击
             print(f"[DIAGNOSTIC] 🖱️ 正在穿透多层 div 寻找并点击 Turnstile 容器...")
             clicked_via_js = sb.execute_script('''
-                return (function() {
-                    let inp = document.querySelector("input[name='cf-turnstile-response']");
-                    if (!inp) return false;
-                    
-                    // 向上寻找合适的容器（跳过过小的子标签，寻找有足够宽高的父级 div 容器）
-                    let el = inp.parentElement;
-                    while (el && el !== document.body) {
-                        let rect = el.getBoundingClientRect();
-                        if (rect.width >= 200 && rect.height >= 40) {
-                            el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                            // 模拟鼠标点击事件
-                            let evt = new MouseEvent('click', {
-                                view: window,
-                                bubbles: true,
-                                cancelable: true,
-                                clientX: rect.left + rect.width / 2,
-                                clientY: rect.top + rect.height / 2
-                            });
-                            el.dispatchEvent(evt);
-                            return true;
-                        }
-                        el = el.parentElement;
+                let inp = document.querySelector("input[name='cf-turnstile-response']");
+                if (!inp) return false;
+                
+                let el = inp.parentElement;
+                while (el && el !== document.body) {
+                    let rect = el.getBoundingClientRect();
+                    if (rect.width >= 200 && rect.height >= 40) {
+                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                        let evt = new MouseEvent('click', {
+                            view: window,
+                            bubbles: true,
+                            cancelable: true,
+                            clientX: rect.left + rect.width / 2,
+                            clientY: rect.top + rect.height / 2
+                        });
+                        el.dispatchEvent(evt);
+                        return true;
                     }
-                    return false;
-                })();
+                    el = el.parentElement;
+                }
+                return false;
             ''')
             
             if not clicked_via_js:
