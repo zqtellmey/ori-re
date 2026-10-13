@@ -110,74 +110,50 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """针对多层 div 嵌套的第二个人机验证：递归寻找 Turnstile 容器并模拟点击"""
+    """针对该特定 Turnstile 结构的精准点击与验证处理"""
     try:
         for attempt in range(1, 8):
-            print(f"\n[DIAGNOSTIC] 🔍 --- [对话框CF排查第 1 轮] 开始诊断 ---")
+            print(f"[INFO] ⏱️ [对话框CF第 {attempt} 轮] 尝试定位并点击验证复选框...")
             
-            # 1. 安全检测状态（SeleniumBase 内部会自动包裹，直接写表达式即可）
-            diag_info = sb.execute_script('''
-                let info = {};
-                let inp = document.querySelector("input[name='cf-turnstile-response']");
-                info.has_input = (inp !== null);
-                info.input_value = inp ? inp.value : null;
-                
-                let mainCb = document.querySelector('input[type="checkbox"]');
-                info.main_checkbox_exists = (mainCb !== null);
-                info.main_checkbox_checked = mainCb ? mainCb.checked : false;
-                
-                return info;
-            ''')
-            
-            print(f"[DIAGNOSTIC] 📊 诊断结果: {diag_info}")
-
-            # 2. 如果已经通过，直接返回
-            if diag_info.get("input_value") and len(diag_info.get("input_value")) > 10:
-                print("[INFO] ✅ 经诊断确认：第二个人机验证已成功通过！")
-                return True
-            if diag_info.get("main_checkbox_checked"):
-                print("[INFO] ✅ 复选框已勾选！")
-                return True
-
-            # 3. 向上顺藤摸瓜：穿透多层 div 找到 Turnstile 的外层容器并点击
-            print(f"[DIAGNOSTIC] 🖱️ 正在穿透多层 div 寻找并点击 Turnstile 容器...")
-            clicked_via_js = sb.execute_script('''
-                let inp = document.querySelector("input[name='cf-turnstile-response']");
-                if (!inp) return false;
-                
-                let el = inp.parentElement;
-                while (el && el !== document.body) {
-                    let rect = el.getBoundingClientRect();
-                    if (rect.width >= 200 && rect.height >= 40) {
-                        el.scrollIntoView({ behavior: 'smooth', block: 'center' });
-                        let evt = new MouseEvent('click', {
-                            view: window,
-                            bubbles: true,
-                            cancelable: true,
-                            clientX: rect.left + rect.width / 2,
-                            clientY: rect.top + rect.height / 2
-                        });
-                        el.dispatchEvent(evt);
-                        return true;
-                    }
-                    el = el.parentElement;
-                }
-                return false;
-            ''')
-            
-            if not clicked_via_js:
-                print(f"[DIAGNOSTIC] 🖱️ JS 容器未找到，切换为 uc_gui_click_captcha()...")
-                try:
+            try:
+                # 1. 优先尝试直接定位并点击复选框或其包裹标签
+                if sb.is_element_present('input[type="checkbox"]'):
+                    sb.scroll_to('input[type="checkbox"]')
+                    sb.click('input[type="checkbox"]')
+                    print("[INFO] 🖱️ 已通过原生选择器点击复选框")
+                elif sb.is_element_present('label.fXVnL4'):
+                    sb.scroll_to('label.fXVnL4')
+                    sb.click('label.fXVnL4')
+                    print("[INFO] 🖱️ 已通过原生选择器点击验证标签")
+                else:
+                    # 兜底：使用底层物理 GUI 点击
+                    print("[INFO] 🖱️ 未直接命中元素，触发 uc_gui_click_captcha()...")
                     sb.uc_gui_click_captcha()
-                except Exception:
-                    pass
+            except Exception as e:
+                print(f"[WARN] 点击过程出现异常: {e}")
 
             time.sleep(4)
+
+            # 2. 检查验证是否成功通过（检查 response 输入框是否有 Token 生成）
+            try:
+                is_passed = sb.execute_script('''
+                    let inp = document.querySelector("input[name='cf-turnstile-response']");
+                    return inp && inp.value && inp.value.length > 0;
+                ''')
+                if is_passed:
+                    print("[INFO] ✅ 对话框内第二个 Cloudflare 人机验证已成功通过！")
+                    sb.sleep(2)
+                    return True
+            except Exception:
+                pass
+
+            print(f"[INFO] ⏳ [对话框CF第 {attempt} 轮] 验证尚未确认，准备重试...")
+            sb.sleep(3)
             
-        print("[WARN] ❌ 对话框内第二个人机验证在多轮排查后仍未通过。")
+        print("[WARN] ⚠️ 对话框 CF 验证超时未能确认通过。")
         try:
             sb.save_screenshot("debug_modal_turnstile.png")
-            print("[DIAGNOSTIC] 📸 已保存现场截图到 debug_modal_turnstile.png")
+            print("[INFO] 📸 已保存现场截图到 debug_modal_turnstile.png")
         except Exception:
             pass
         return False
