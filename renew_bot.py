@@ -1,7 +1,7 @@
 import os
+import sys
 import time
 import platform
-import random
 import requests
 from seleniumbase import SB
 
@@ -21,6 +21,24 @@ PASSWORD = os.getenv("ORI_PASSWORD")
 TG_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN")
 TG_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID")
 # ===============================================
+
+def is_linux(): 
+    return platform.system().lower() == "linux"
+
+# --- 设置纵向超长虚拟桌面 (Xvfb 核心支持，供物理点击使用) ---
+def setup_display():
+    if is_linux() and not os.environ.get("DISPLAY"):
+        try:
+            from pyvirtualdisplay import Display
+            d = Display(visible=False, size=(1280, 2400))
+            d.start()
+            os.environ["DISPLAY"] = d.new_display_var
+            print("[INFO] 🖥️ Xvfb 虚拟纵向长屏桌面已成功启动 (1280x2400)")
+            return d
+        except Exception as e:
+            print(f"[ERROR] 虚拟显示启动失败: {e}")
+            sys.exit(1)
+    return None
 
 def send_telegram_photo(sb, step_name):
     """如果开关打开，则通过代理截图并发送到 Telegram，统一加上 [Ori] 前缀"""
@@ -76,97 +94,105 @@ def remove_ads(sb):
     except Exception as e:
         print(f"[广告清除] 执行时出现异常: {e}")
 
-
-# ==================== 专为弹窗设计的精准物理点击模块 ====================
-def expand_turnstile(sb):
-    """修复被压缩或隐藏的容器尺寸"""
+def handle_login_turnstile(sb):
+    """登录页面的 CF 验证处理逻辑"""
     try:
-        sb.execute_script("""
-            document.querySelectorAll('.cf-turnstile').forEach(function(c) {
-                c.style.overflow = 'visible'; c.style.width = '300px'; c.style.height = '65px';
-            });
-            document.querySelectorAll('iframe').forEach(function(f) {
-                if (f.src && f.src.includes('challenges.cloudflare.com')) {
-                    f.style.width = '300px'; f.style.height = '65px';
-                    f.style.visibility = 'visible'; f.style.opacity = '1';
-                }
-            });
-        """)
-    except Exception:
-        pass
-
-def handle_modal_turnstile_robust(sb, timeout=60):
-    """对话框内第二个人机验证的稳健过检：展开 + 计算容器坐标精准物理点击"""
-    iframe_selector = 'iframe[src*="challenges.cloudflare.com"]'
-    start_time = time.time()
-    
-    while time.time() - start_time < timeout:
-        # 1. 检查是否已经生成 token
-        try:
-            token = sb.execute_script('return document.querySelector("[name=cf-turnstile-response]")?.value || "";')
-            if token and len(token) > 20:
-                print("[INFO] ✅ 对话框内 Cloudflare Turnstile 已通过！")
-                return True
-        except Exception:
-            pass
-
-        if not sb.is_element_present(iframe_selector):
-            sb.sleep(1)
-            continue
-
-        print("[INFO] 🛡️ 检测到对话框内 Turnstile 验证，正在准备精准点击...")
-        expand_turnstile(sb)
-
-        try:
-            rect = sb.execute_script("""
-                var inp = document.querySelector('input[name="cf-turnstile-response"]');
-                var el = inp ? inp.parentElement : null;
-                while(el && el !== document.body && (el.offsetWidth < 250 || el.offsetHeight < 50)) {
-                    el = el.parentElement;
-                }
-                if(!el || el === document.body){
-                    var f = document.querySelector('iframe[src*="challenges.cloudflare.com"]');
-                    el = f || null;
-                }
-                if(!el) return null;
-                el.scrollIntoView({block: 'center'});
-                var r = el.getBoundingClientRect();
-                return [r.left, r.top, r.width, r.height];
-            """)
+        for attempt in range(1, 6):
+            print(f"[INFO] ⏱️ [登录CF第 {attempt} 轮] 检查验证状态...")
+            has_turnstile = sb.execute_script('return document.querySelector("input[name=\'cf-turnstile-response\']") !== null')
             
-            if rect:
-                w = sb.driver.get_window_rect()
-                inner_h = sb.execute_script("return window.innerHeight;")
-                x = w["x"] + rect[0] + 40 + random.uniform(-5, 5)
-                y = w["y"] + w["height"] - inner_h + rect[1] + rect[3] / 2.0 + random.uniform(-3, 3)
-                print(f"[INFO] ⚡ 正在点击对话框验证坐标: ({int(x)}, {int(y)})")
-                sb.uc_gui_click_x_y(x, y)
-            else:
+            if has_turnstile:
+                print(f"[INFO] 🛡️ [登录CF第 {attempt} 轮] 发现验证框，触发点击...")
                 sb.uc_gui_click_captcha()
-        except Exception as e:
-            print(f"[WARN] 点击异常: {e}")
+                sb.sleep(4)
+            else:
+                print(f"[INFO] 🟢 [登录CF第 {attempt} 轮] 未检测到验证输入框。")
+
+            is_passed = sb.execute_script('''
+                (function() {
+                    let respInput = document.querySelector("input[name='cf-turnstile-response']");
+                    if (respInput && respInput.value && respInput.value.length > 0) return true;
+                    let cb = document.querySelector('input[type="checkbox"]');
+                    if (cb && cb.checked) return true;
+                    return false;
+                })();
+            ''')
+
+            if is_passed:
+                print("[INFO] ✅ 登录 Cloudflare 人机验证已成功通过！")
+                sb.sleep(2)
+                return True
+            else:
+                sb.sleep(3)
+        return False
+    except Exception as e:
+        print(f"[WARN] 登录 CF 验证异常: {e}")
+        return False
+
+def handle_modal_turnstile(sb):
+    """升级版对话框 CF 验证：强制滚动到视图中心并进行精确物理点击"""
+    try:
+        for attempt in range(1, 6):
+            print(f"[INFO] ⏱️ [对话框CF第 {attempt} 轮] 检查弹窗中的人机验证...")
+            
+            # 1. 强力滚动定位：把验证组件滚动到视图正中心，确保 uc_gui_click_captcha 能点到
+            try:
+                sb.execute_script('''
+                    let iframe = document.querySelector('iframe[src*="turnstile"]') || document.querySelector('iframe');
+                    if (iframe) {
+                        iframe.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    } else {
+                        let widget = document.querySelector('.cf-turnstile') || document.querySelector('input[type="checkbox"]');
+                        if (widget) widget.scrollIntoView({ behavior: 'smooth', block: 'center' });
+                    }
+                ''')
+                time.sleep(1)
+            except Exception:
+                pass
+
+            # 2. 触发物理点击
             try:
                 sb.uc_gui_click_captcha()
             except Exception:
                 pass
 
-        sb.sleep(4)
+            # 3. 检查是否通过
+            is_passed = sb.execute_script('''
+                (function() {
+                    let resp = document.querySelector("input[name='cf-turnstile-response']");
+                    if (resp && resp.value && resp.value.length > 0) return true;
+                    
+                    let iframes = document.querySelectorAll('iframe');
+                    for (let f of iframes) {
+                        try {
+                            let innerDoc = f.contentDocument || f.contentWindow.document;
+                            let innerResp = innerDoc.querySelector("input[name='cf-turnstile-response']");
+                            if (innerResp && innerResp.value && innerResp.value.length > 0) return true;
+                            let innerCb = innerDoc.querySelector('input[type="checkbox"]');
+                            if (innerCb && innerCb.checked) return true;
+                        } catch(err) {}
+                    }
+                    return false;
+                })();
+            ''')
 
-    print("[WARN] ⚠️ 对话框 Turnstile 验证超时。")
-    return False
-# =========================================================================
+            if is_passed:
+                print("[INFO] ✅ 对话框内第二个 Cloudflare 人机验证已成功通过！")
+                sb.sleep(2)
+                return True
+            else:
+                print(f"[INFO] ⏳ [对话框CF第 {attempt} 轮] 验证还在进行中，继续等待...")
+                sb.sleep(4)
+                
+        print("[WARN] ⚠️ 对话框 CF 验证超时未能确认通过。")
+        return False
+    except Exception as e:
+        print(f"[WARN] 处理对话框 CF 验证时发生异常: {e}")
+        return False
 
 def main():
-    display = None
-    if platform.system().lower() == "linux" and not os.environ.get("DISPLAY"):
-        try:
-            from pyvirtualdisplay import Display
-            display = Display(visible=False, size=(1280, 2400))
-            display.start()
-            os.environ["DISPLAY"] = display.new_display_var
-            print("[INFO] 🖥️ Xvfb 虚拟纵向长屏桌面已成功启动 (1280x2400)")
-        except Exception as e:
-            print(f"[ERROR] 虚拟显示启动失败: {e}")
+    # 启动 Xvfb 虚拟长屏桌面
+    display = setup_display()
 
     try:
         with SB(uc=True, test=True, headless=False, proxy=PROXY_URL) as sb:
@@ -188,41 +214,15 @@ def main():
             send_telegram_photo(sb, "2_输入账号密码")
 
             print("=== 3. 处理登录 Cloudflare 人机验证 ===")
-            # 严格使用您最开始验证通过的稳定登录循环逻辑
-            for attempt in range(1, 5):
-                remove_ads(sb)
-                print(f"尝试第 {attempt} 次点击登录 CF 验证...")
-                try:
-                    sb.click('input[type="checkbox"]')
-                except Exception:
-                    try:
-                        sb.uc_gui_click_captcha()
-                    except Exception:
-                        pass
-                
-                time.sleep(3)
-                
-                is_checked = False
-                try:
-                    is_checked = sb.is_checked('input[type="checkbox"]')
-                except Exception:
-                    try:
-                        is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
-                    except Exception:
-                        pass
-
-                if is_checked:
-                    print("登录 Cloudflare 人机验证已通过！")
-                    break
-                else:
-                    print("验证尚未通过，准备重试...")
-
+            remove_ads(sb)
+            handle_login_turnstile(sb)
             send_telegram_photo(sb, "3_完成登录人机验证")
 
             print("=== 4. 点击 Sign In 按钮 ===")
             remove_ads(sb)
             sb.click('button[type="submit"]')
-            time.sleep(5)
+            time.sleep(6)
+            # 登录提交后直接进入主页，不再重复检测 CF
             send_telegram_photo(sb, "4_登录后主页")
 
             print("=== 5. 通过 API 获取服务器状态 ===")
@@ -255,6 +255,7 @@ def main():
             print(f"服务器状态检查 -> renewable: {renewable}, renewal 剩余天数: {renewal_days}")
             send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
 
+            # 如果 renewable 为 true 并且剩余天数符合条件（测试时可设为 <= 7，实际使用 <= 2）
             if renewable and renewal_days <= 7:
                 print("满足续期条件，开始前往续期页面...")
                 remove_ads(sb)
@@ -340,7 +341,7 @@ def main():
 
                     print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
                     remove_ads(sb)
-                    passed = handle_modal_turnstile_robust(sb, timeout=60)
+                    passed = handle_modal_turnstile(sb)
                     
                     if not passed:
                         print("错误：对话框内的第二个 Cloudflare 人机验证未成功通过，严格终止程序！")
