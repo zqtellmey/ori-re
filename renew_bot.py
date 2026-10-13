@@ -75,18 +75,21 @@ def remove_ads(sb):
         print(f"[广告清除] 执行时出现异常: {e}")
 
 def handle_login_turnstile(sb):
-    """登录页面的 CF 验证处理逻辑"""
+    """登录页面的 CF 验证处理逻辑：恢复您最开始验证通过的直接点 checkbox 逻辑"""
     try:
         for attempt in range(1, 6):
-            print(f"[INFO] ⏱️ [登录CF第 {attempt} 轮] 检查验证状态...")
-            has_turnstile = sb.execute_script('return document.querySelector("input[name=\'cf-turnstile-response\']") !== null')
+            print(f"[INFO] ⏱️ [登录CF第 {attempt} 轮] 尝试点击复选框...")
+            remove_ads(sb)
             
-            if has_turnstile:
-                print(f"[INFO] 🛡️ [登录CF第 {attempt} 轮] 发现验证框，触发点击...")
-                sb.uc_gui_click_captcha()
-                sb.sleep(4)
-            else:
-                print(f"[INFO] 🟢 [登录CF第 {attempt} 轮] 未检测到验证输入框。")
+            try:
+                sb.click('input[type="checkbox"]')
+            except Exception:
+                try:
+                    sb.execute_script('let cb = document.querySelector(\'input[type="checkbox"]\'); if(cb) cb.click();')
+                except Exception:
+                    pass
+
+            time.sleep(3)
 
             is_passed = sb.execute_script('''
                 (function() {
@@ -103,6 +106,7 @@ def handle_login_turnstile(sb):
                 sb.sleep(2)
                 return True
             else:
+                print(f"[INFO] ⏳ [登录CF第 {attempt} 轮] 尚未打勾，准备重试...")
                 sb.sleep(3)
         return False
     except Exception as e:
@@ -115,7 +119,6 @@ def handle_modal_turnstile(sb):
         for attempt in range(1, 6):
             print(f"[INFO] ⏱️ [对话框CF第 {attempt} 轮] 检查弹窗中的人机验证...")
             
-            # 1. 强力滚动定位：把验证组件滚动到视图正中心，确保 uc_gui_click_captcha 能点到
             try:
                 sb.execute_script('''
                     let iframe = document.querySelector('iframe[src*="turnstile"]') || document.querySelector('iframe');
@@ -130,13 +133,11 @@ def handle_modal_turnstile(sb):
             except Exception:
                 pass
 
-            # 2. 触发物理点击
             try:
                 sb.uc_gui_click_captcha()
             except Exception:
                 pass
 
-            # 3. 检查是否通过
             is_passed = sb.execute_script('''
                 (function() {
                     let resp = document.querySelector("input[name='cf-turnstile-response']");
