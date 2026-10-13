@@ -94,7 +94,6 @@ def main():
         print("=== 3. 处理 Cloudflare 人机验证 ===")
         # 多次尝试点击 CF 验证的 checkbox (至少 3 次或直到通过)
         for attempt in range(1, 5):
-            # 点击验证前先去广告
             remove_ads(sb)
             print(f"尝试第 {attempt} 次点击 Cloudflare 验证...")
             try:
@@ -127,7 +126,6 @@ def main():
         send_telegram_photo(sb, "3_完成人机验证")
 
         print("=== 4. 点击 Sign In 按钮 ===")
-        # 点击登录按钮前去广告
         remove_ads(sb)
         sb.click('button[type="submit"]')
         time.sleep(5)
@@ -166,7 +164,7 @@ def main():
         send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
 
         # 如果 renewable 为 true 并且剩余天数符合条件（测试时可设为 <= 7，实际使用建议改为 <= 2）
-        if renewable and renewal_days <= 7:
+        if renewable and renewal_days <= 2:
             print("满足续期条件，开始前往续期页面...")
             remove_ads(sb)
             sb.open(SERVER_PANEL_URL)
@@ -195,7 +193,6 @@ def main():
 
             if has_renew_button:
                 print("检测到 Renew 按钮，准备点击...")
-                # 点击 Renew 按钮前去广告
                 remove_ads(sb)
                 try:
                     sb.click('xpath://button[contains(., "Renew")]')
@@ -215,7 +212,6 @@ def main():
                 send_telegram_photo(sb, "7_点击Renew之后")
 
                 print("检查并点击弹窗中的 Read Article 按钮...")
-                # 点击 Read Article 按钮前去广告
                 remove_ads(sb)
                 
                 clicked_read_article = False
@@ -246,8 +242,10 @@ def main():
                 else:
                     print("提示：未能在弹窗中找到 Read Article 按钮。")
 
-                time.sleep(5)
-                send_telegram_photo(sb, "8_点击ReadArticle之后")
+                # 点击 Read Article 按钮后等待 20 秒
+                print("已点击 Read Article，等待 20 秒以完成后台续期...")
+                time.sleep(20)
+                send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
 
                 print("再次通过 API 验证是否续期成功...")
                 check_response = session.get(API_SERVER_URL, headers=headers)
