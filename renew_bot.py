@@ -110,7 +110,7 @@ def handle_login_turnstile(sb):
         return False
 
 def handle_modal_turnstile(sb):
-    """针对动态 Portal 弹窗内 Cloudflare Turnstile 的增强处理"""
+    """支持 Shadow DOM 及多层 iframe 穿透的弹窗人机验证处理函数"""
     try:
         for attempt in range(1, 6):
             print(f"\n[INFO] 🔍 --- [对话框CF排查第 {attempt} 轮] ---")
@@ -131,32 +131,65 @@ def handle_modal_turnstile(sb):
                 except Exception:
                     pass
 
-            # 2. 检查 #modal-portal 内部是否出现了 Turnstile 的 iframe 遮罩/组件
-            print(f"[INFO] 🎯 正在检查 #modal-portal 动态弹窗状态...")
-            portal_has_iframe = sb.execute_script("""
+            # 2. 深度递归穿透函数（支持 Shadow DOM 和 iframe）
+            print(f"[INFO] 🎯 正在执行 Shadow DOM 及 iframe 深度穿透扫描与点击...")
+            clicked = sb.execute_script("""
                 (function() {
-                    let portal = document.querySelector('#modal-portal');
-                    if (!portal) return false;
-                    let iframe = portal.querySelector('iframe');
-                    return iframe !== null;
+                    // 递归遍历函数：支持普通 DOM 和 Shadow DOM
+                    function deepQueryClick(root) {
+                        // 1. 在当前根节点下找 checkbox 或 label
+                        let cb = root.querySelector ? root.querySelector('input[type="checkbox"]') : null;
+                        if (cb) {
+                            cb.click();
+                            return "Clicked Shadow/Main checkbox";
+                        }
+                        
+                        // 2. 遍历所有子元素，检查是否有 shadowRoot
+                        let allElements = root.querySelectorAll ? root.querySelectorAll('*') : [];
+                        for (let el of allElements) {
+                            if (el.shadowRoot) {
+                                let res = deepQueryClick(el.shadowRoot);
+                                if (res) return res;
+                            }
+                        }
+                        return null;
+                    }
+
+                    // A. 先从主文档及所有 Shadow DOM 开始找
+                    let result = deepQueryClick(document);
+                    if (result) return result;
+
+                    // B. 如果还没找到，深入到页面中所有的 iframe 内部去递归找
+                    let iframes = document.querySelectorAll('iframe');
+                    for (let f of iframes) {
+                        try {
+                            let innerDoc = f.contentDocument || f.contentWindow.document;
+                            if (innerDoc) {
+                                let innerResult = deepQueryClick(innerDoc);
+                                if (innerResult) return "Iframe: " + innerResult;
+                            }
+                        } catch(e) {}
+                    }
+
+                    return false;
                 })();
             """)
 
-            if portal_has_iframe:
-                print(f"[INFO] 🛡️ 检测到 #modal-portal 内已加载验证 iframe，准备穿透点击...")
+            print(f"[DIAGNOSTIC] 深度穿透扫描结果: {clicked}")
+
+            if clicked and clicked != "false":
+                print(f"[INFO] 🖱️ 成功穿透并触发点击: {clicked}")
             else:
-                print(f"[INFO] ⏳ 等待弹窗及验证组件完全加载...")
+                print(f"[INFO] 🖱️ 脚本未能直接命中，触发 SeleniumBase 底层 GUI 物理点击兜底...")
+                try:
+                    sb.uc_gui_click_captcha()
+                except Exception as e:
+                    print(f"[DEBUG] uc_gui_click_captcha 提示: {e}")
 
-            # 3. 触发 SeleniumBase 的 UC 模式图形验证点击
-            try:
-                # 尝试指定在带有 challenge 或 iframe 的环境点击
-                sb.uc_gui_click_captcha()
-            except Exception as e:
-                print(f"[DEBUG] uc_gui_click_captcha 执行提示: {e}")
-
+            # 等待 4 秒观察响应
             sb.sleep(4)
             
-            # 4. 再次校验 Token
+            # 3. 再次校验 Token
             if sb.is_element_present('input[name="cf-turnstile-response"]'):
                 try:
                     token_val = sb.execute_script("""
