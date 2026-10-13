@@ -74,25 +74,56 @@ def remove_ads(sb):
     except Exception as e:
         print(f"[广告清除] 执行时出现异常: {e}")
 
-# --- 借鉴成功的双重循环 CF 穿透机制 ---
 def handle_turnstile(sb):
-    """通过检测 input[name='cf-turnstile-response'] 状态并调度物理点击来完美过检"""
+    """升级版 CF 穿透：不仅点击，而且严格循环检测 response 或 checkbox 勾选状态，直到成功通过"""
     try:
-        for attempt in range(1, 3):
-            print(f"[INFO] ⏱️ [第 {attempt} 轮检测] 等待 5 秒让 Cloudflare 验证框加载...")
-            sb.sleep(5)
+        for attempt in range(1, 6):
+            print(f"[INFO] ⏱️ [第 {attempt} 轮检测] 检查 Cloudflare 验证状态...")
             
+            # 1. 检查是否存在 CF 验证组件
             has_turnstile = sb.execute_script('return document.querySelector("input[name=\'cf-turnstile-response\']") !== null')
             
             if has_turnstile:
-                print(f"[INFO] 🛡️ [第 {attempt} 轮] 发现 Cloudflare Turnstile 人机验证框！")
-                print(f"[INFO] ⚡ [第 {attempt} 轮] 正在启动物理级 uc_gui_click_captcha() 穿透点击...")
+                print(f"[INFO] 🛡️ [第 {attempt} 轮] 发现 Cloudflare Turnstile 验证框，触发点击...")
                 sb.uc_gui_click_captcha()
-                print(f"[INFO] ⏳ [第 {attempt} 轮] 物理点击完成，等待 5 秒让状态同步...")
-                sb.sleep(5)
+                sb.sleep(4)
             else:
-                print(f"[INFO] 🟢 [第 {attempt} 轮] 当前视图未检测到 CF 拦截框。")
-        return True
+                print(f"[INFO] 🟢 [第 {attempt} 轮] 未检测到 CF 验证输入框，可能已加载或无需验证。")
+
+            # 2. 严格检查是否已经真正打上勾或生成响应值
+            is_passed = sb.execute_script('''
+                (function() {
+                    // 检查 response 隐藏 input 是否有值
+                    let respInput = document.querySelector("input[name='cf-turnstile-response']");
+                    if (respInput && respInput.value && respInput.value.length > 0) return true;
+                    
+                    // 检查主文档或 iframe 内的 checkbox 是否被勾选
+                    let cb = document.querySelector('input[type="checkbox"]');
+                    if (cb && cb.checked) return true;
+                    
+                    let iframes = document.querySelectorAll('iframe');
+                    for (let f of iframes) {
+                        try {
+                            let innerCb = f.contentDocument.querySelector('input[type="checkbox"]');
+                            if (innerCb && innerCb.checked) return true;
+                            let innerResp = f.contentDocument.querySelector("input[name='cf-turnstile-response']");
+                            if (innerResp && innerResp.value && innerResp.value.length > 0) return true;
+                        } catch(err) {}
+                    }
+                    return false;
+                })();
+            ''')
+
+            if is_passed:
+                print("[INFO] ✅ Cloudflare 人机验证已成功通过（检测到已勾选/有响应值）！")
+                sb.sleep(2)
+                return True
+            else:
+                print(f"[INFO] ⏳ [第 {attempt} 轮] 验证尚未完全通过（还在转圈或未勾选），继续等待重试...")
+                sb.sleep(3)
+                
+        print("[WARN] ⚠️ 达到最大重试次数，未能确认 Cloudflare 验证通过。")
+        return False
     except Exception as e:
         print(f"[WARN] 穿透 CF 验证时发生异常: {e}")
         return False
@@ -157,7 +188,7 @@ def main():
         print(f"服务器状态检查 -> renewable: {renewable}, renewal 剩余天数: {renewal_days}")
         send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
 
-        # 如果 renewable 为 true 并且剩余天数符合条件（测试时可设为 <= 7，实际使用建议 <= 2）
+        # 如果 renewable 为 true 并且剩余天数符合条件（测试时可设为 <= 7，实际使用建议改为 <= 2）
         if renewable and renewal_days <= 7:
             print("满足续期条件，开始前往续期页面...")
             remove_ads(sb)
@@ -242,9 +273,14 @@ def main():
                 send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
 
                 print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
-                # 直接无缝调用经过验证的成熟 Turnstile 穿透逻辑
                 remove_ads(sb)
-                handle_turnstile(sb)
+                passed = handle_turnstile(sb)
+                
+                if not passed:
+                    print("错误：第二个 Cloudflare 人机验证未成功通过，严格终止程序！")
+                    send_telegram_photo(sb, "9_第二个人机验证未通过")
+                    return
+
                 send_telegram_photo(sb, "9_完成第二个人机验证")
 
                 print("=== 7. 点击 Claim Renewal 按钮 ===")
