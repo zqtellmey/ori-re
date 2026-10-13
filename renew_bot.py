@@ -63,6 +63,7 @@ def remove_ads(sb):
         (function() {
             const ad_iframes = document.querySelectorAll('iframe');
             ad_iframes.forEach(el => {
+                // 排除 Cloudflare 自身的安全质询 iframe，只清理广告
                 if (el.style.position === 'fixed' && el.style.zIndex === '2147483647') {
                     el.remove();
                 }
@@ -238,65 +239,52 @@ def main():
                 else:
                     print("提示：未能在弹窗中找到 Read Article 按钮。")
 
-                # 点击 Read Article 按钮后等待 20 秒
-                print("已点击 Read Article，等待 20 秒...")
+                # 点击 Read Article 按钮后等待 20 秒让 CF 验证小组件加载出来
+                print("已点击 Read Article，等待 20 秒以加载对话框内的 CF 验证...")
                 time.sleep(20)
                 send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
 
-                print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
-                time.sleep(3)
+                print("=== 6. 检测并处理对话框内的第二个 Cloudflare 人机验证 ===")
                 second_captcha_passed = False
                 
                 for attempt in range(1, 6):
                     remove_ads(sb)
                     
-                    # 检查当前页面及所有 iframe / 对话框内部是否存在验证元素
-                    element_exists = False
+                    # 精确检查页面中是否存在带有 cf-chl-widget 的 iframe
+                    cf_iframe_exists = False
                     try:
-                        element_exists = sb.execute_script("""
+                        cf_iframe_exists = sb.execute_script("""
                         (function() {
-                            let cb = document.querySelector('input[type="checkbox"]');
-                            if (cb) return true;
-                            let iframes = document.querySelectorAll('iframe');
-                            for (let f of iframes) {
-                                try {
-                                    let innerCb = f.contentDocument.querySelector('input[type="checkbox"]');
-                                    if (innerCb) return true;
-                                } catch(err) {}
-                            }
-                            return false;
+                            let widgetIframe = document.querySelector('iframe[id^="cf-chl-widget-"]');
+                            return widgetIframe !== null;
                         })();
                         """)
                     except Exception:
                         pass
 
-                    if not element_exists:
-                        print(f"第 {attempt} 次检测：对话框中尚未出现 CF 人机验证元素，继续等待...")
+                    if not cf_iframe_exists:
+                        print(f"第 {attempt} 次检测：对话框中尚未出现 CF 验证 iframe，继续等待...")
                         time.sleep(4)
                         continue
 
-                    print(f"检测到对话框中的 CF 人机验证元素，开始第 {attempt} 次尝试处理...")
+                    print(f"检测到 CF 验证 widget iframe，开始第 {attempt} 次尝试处理...")
+                    
+                    # 尝试调用 GUI 辅助点击
                     try:
                         sb.uc_gui_click_captcha()
                     except Exception:
                         pass
                     
-                    try:
-                        remove_ads(sb)
-                        sb.click('input[type="checkbox"]')
-                    except Exception:
-                        pass
-                    
+                    # 通过 JS 穿透 iframe 内部点击复选框
                     try:
                         sb.execute_script("""
                             (function() {
-                                let cb = document.querySelector('input[type="checkbox"]');
-                                if (cb) { cb.click(); return; }
-                                let iframes = document.querySelectorAll('iframe');
-                                for (let f of iframes) {
+                                let widgetIframe = document.querySelector('iframe[id^="cf-chl-widget-"]');
+                                if (widgetIframe) {
                                     try {
-                                        let innerCb = f.contentDocument.querySelector('input[type="checkbox"]');
-                                        if (innerCb) { innerCb.click(); return; }
+                                        let innerDoc = widgetIframe.contentDocument || widgetIframe.contentWindow.document;
+                                        let cb = innerDoc.querySelector('input[type="checkbox"]') || innerDoc.querySelector('.ctp-checkbox');
+                                        if (cb) { cb.click(); }
                                     } catch(err) {}
                                 }
                             })();
@@ -306,30 +294,24 @@ def main():
 
                     time.sleep(4)
                     
+                    # 检查是否已勾选通过
                     is_checked = False
                     try:
-                        is_checked = sb.is_checked('input[type="checkbox"]')
+                        is_checked = sb.execute_script("""
+                            (function() {
+                                let widgetIframe = document.querySelector('iframe[id^="cf-chl-widget-"]');
+                                if (widgetIframe) {
+                                    try {
+                                        let innerDoc = widgetIframe.contentDocument || widgetIframe.contentWindow.document;
+                                        let cb = innerDoc.querySelector('input[type="checkbox"]');
+                                        if (cb && cb.checked) return true;
+                                    } catch(err) {}
+                                }
+                                return false;
+                            })();
+                        """)
                     except Exception:
                         pass
-                    
-                    if not is_checked:
-                        try:
-                            is_checked = sb.execute_script("""
-                                (function() {
-                                    let cb = document.querySelector('input[type="checkbox"]');
-                                    if (cb && cb.checked) return true;
-                                    let iframes = document.querySelectorAll('iframe');
-                                    for (let f of iframes) {
-                                        try {
-                                            let innerCb = f.contentDocument.querySelector('input[type="checkbox"]');
-                                            if (innerCb && innerCb.checked) return true;
-                                        } catch(err) {}
-                                    }
-                                    return false;
-                                })();
-                            """)
-                        except Exception:
-                            pass
 
                     if is_checked:
                         print("对话框中的第二个 Cloudflare 人机验证已通过（检测到 Checkbox 已勾选）！")
@@ -339,7 +321,7 @@ def main():
                         print(f"第 {attempt} 次验证尚未通过，准备重试...")
 
                 if not second_captcha_passed:
-                    print("错误：对话框中的第二个 Cloudflare 人机验证未通过或未出现，严格终止程序！")
+                    print("错误：未找到第二个 Cloudflare 人机验证组件或验证未通过，严格终止程序！")
                     send_telegram_photo(sb, "9_第二个人机验证未通过或未出现")
                     return
 
@@ -390,10 +372,4 @@ def main():
                     send_telegram_photo(sb, f"11_最终续期完成(新剩余天数{new_renewal_days}天)")
             else:
                 print("提示：当前页面未找到 Renew 按钮（可能还未到可续期时间或无需续期），跳过点击操作。")
-                send_telegram_photo(sb, "7_未找到Renew按钮跳过")
-        else:
-            print("当前不需要续期（renewable 为 false 或剩余天数大于设定阈值）。")
-            send_telegram_photo(sb, "6_当前无需续期跳过操作")
-
-if __name__ == "__main__":
-    main()
+                send_telegram_photo(sb
