@@ -91,13 +91,12 @@ def main():
         time.sleep(1)
         send_telegram_photo(sb, "2_输入账号密码")
 
-        print("=== 3. 处理 Cloudflare 人机验证 ===")
-        # 多次尝试点击 CF 验证的 checkbox (至少 3 次或直到通过)
+        print("=== 3. 处理登录 Cloudflare 人机验证 ===")
         for attempt in range(1, 5):
             remove_ads(sb)
-            print(f"尝试第 {attempt} 次点击 Cloudflare 验证...")
+            print(f"尝试第 {attempt} 次点击登录 CF 验证...")
             try:
-                sb.uc_gui_click_captcha()  # SeleniumBase 内置的验证码辅助点击
+                sb.uc_gui_click_captcha()
             except Exception:
                 try:
                     remove_ads(sb)
@@ -107,7 +106,6 @@ def main():
             
             time.sleep(3)
             
-            # 检查 checkbox 是否已被勾选
             is_checked = False
             try:
                 is_checked = sb.is_checked('input[type="checkbox"]')
@@ -118,12 +116,12 @@ def main():
                     pass
 
             if is_checked:
-                print("Cloudflare 人机验证已通过（检测到 Checkbox 处于勾选状态）！")
+                print("登录 Cloudflare 人机验证已通过！")
                 break
             else:
                 print("验证尚未通过，准备重试...")
 
-        send_telegram_photo(sb, "3_完成人机验证")
+        send_telegram_photo(sb, "3_完成登录人机验证")
 
         print("=== 4. 点击 Sign In 按钮 ===")
         remove_ads(sb)
@@ -132,13 +130,11 @@ def main():
         send_telegram_photo(sb, "4_登录后主页")
 
         print("=== 5. 通过 API 获取服务器状态 ===")
-        # 获取当前浏览器 Cookie 以请求 API
         cookies = sb.get_cookies()
         session = requests.Session()
         for cookie in cookies:
             session.cookies.set(cookie['name'], cookie['value'])
         
-        # 为 requests 会话设置 SOCKS5 代理
         session.proxies = {
             "http": PROXY_URL,
             "https": PROXY_URL
@@ -243,9 +239,77 @@ def main():
                     print("提示：未能在弹窗中找到 Read Article 按钮。")
 
                 # 点击 Read Article 按钮后等待 20 秒
-                print("已点击 Read Article，等待 20 秒以完成后台续期...")
+                print("已点击 Read Article，等待 20 秒...")
                 time.sleep(20)
                 send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
+
+                print("=== 6. 处理 Read Article 之后的第二个 Cloudflare 人机验证 ===")
+                for attempt in range(1, 5):
+                    remove_ads(sb)
+                    print(f"尝试第 {attempt} 次点击第二个 CF 验证...")
+                    try:
+                        sb.uc_gui_click_captcha()
+                    except Exception:
+                        try:
+                            remove_ads(sb)
+                            sb.click('input[type="checkbox"]')
+                        except Exception:
+                            pass
+                    
+                    time.sleep(3)
+                    
+                    is_checked = False
+                    try:
+                        is_checked = sb.is_checked('input[type="checkbox"]')
+                    except Exception:
+                        try:
+                            is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
+                        except Exception:
+                            pass
+
+                    if is_checked:
+                        print("第二个 Cloudflare 人机验证已通过！")
+                        break
+                    else:
+                        print("验证尚未通过，准备重试...")
+
+                send_telegram_photo(sb, "9_完成第二个人机验证")
+
+                print("=== 7. 点击 Claim Renewal 按钮 ===")
+                remove_ads(sb)
+                
+                clicked_claim = False
+                try:
+                    sb.click('xpath://button[contains(., "Claim Renewal")]')
+                    clicked_claim = True
+                except Exception:
+                    try:
+                        remove_ads(sb)
+                        js_claim_script = """
+                        (function() {
+                            const buttons = document.querySelectorAll('button');
+                            for (let btn of buttons) {
+                                if (btn.innerText.includes('Claim Renewal')) {
+                                    btn.click();
+                                    return true;
+                                }
+                            }
+                            return false;
+                        })();
+                        """
+                        clicked_claim = sb.execute_script(js_claim_script)
+                    except Exception as e:
+                        print(f"点击 Claim Renewal 按钮时发生异常: {e}")
+
+                if clicked_claim:
+                    print("成功点击 Claim Renewal 按钮。")
+                else:
+                    print("提示：未能在页面上找到 Claim Renewal 按钮。")
+
+                # 点击 Claim Renewal 后等待 5 秒
+                print("等待 5 秒后查询续期结果...")
+                time.sleep(5)
+                send_telegram_photo(sb, "10_点击ClaimRenewal之后")
 
                 print("再次通过 API 验证是否续期成功...")
                 check_response = session.get(API_SERVER_URL, headers=headers)
@@ -253,7 +317,7 @@ def main():
                     new_data = check_response.json().get("attributes", {})
                     new_renewal_days = new_data.get("renewal")
                     print(f"续期后的剩余天数: {new_renewal_days}")
-                    send_telegram_photo(sb, f"9_续期完成(新剩余天数{new_renewal_days}天)")
+                    send_telegram_photo(sb, f"11_最终续期完成(新剩余天数{new_renewal_days}天)")
             else:
                 print("提示：当前页面未找到 Renew 按钮（可能还未到可续期时间或无需续期），跳过点击操作。")
                 send_telegram_photo(sb, "7_未找到Renew按钮跳过")
