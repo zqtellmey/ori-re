@@ -56,15 +56,17 @@ def send_telegram_photo(sb, step_name):
         print(f"[Telegram] 发送截图异常: {e}")
 
 def remove_ads(sb):
-    """去广告模块：每次进行任何操作前先调用一次，删除指定的浮动 iframe 广告"""
+    """去广告模块：每次进行任何操作前先调用一次，删除指定的浮动 iframe 广告（使用块级作用域避免重复声明）"""
     try:
         ad_script = """
-        const iframes = document.querySelectorAll('iframe');
-        iframes.forEach(el => {
-            if (el.style.position === 'fixed' && el.style.zIndex === '2147483647') {
-                el.remove();
-            }
-        });
+        (function() {
+            const ad_iframes = document.querySelectorAll('iframe');
+            ad_iframes.forEach(el => {
+                if (el.style.position === 'fixed' && el.style.zIndex === '2147483647') {
+                    el.remove();
+                }
+            });
+        })();
         """
         sb.execute_script(ad_script)
         print("[广告清除] 已执行去广告清理。")
@@ -103,8 +105,16 @@ def main():
             
             time.sleep(3)
             
-            # 检测 checkbox 是否已被勾选
-            is_checked = sb.is_element_checked('input[type="checkbox"]')
+            # 检查 checkbox 是否已被勾选（使用正确的 sb.is_checked 方法或 JS 检查）
+            is_checked = False
+            try:
+                is_checked = sb.is_checked('input[type="checkbox"]')
+            except Exception:
+                try:
+                    is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
+                except Exception:
+                    pass
+
             if is_checked:
                 print("Cloudflare 人机验证已通过（检测到 Checkbox 处于勾选状态）！")
                 break
