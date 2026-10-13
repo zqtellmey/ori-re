@@ -1,4 +1,4 @@
-name: Orihost Auto Renew
+name: Ori Auto Renew
 
 on:
   schedule:
