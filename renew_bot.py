@@ -77,9 +77,9 @@ def remove_ads(sb):
         print(f"[广告清除] 执行时出现异常: {e}")
 
 
-# ==================== 移植自成功版本的 CF 高级过检模块 ====================
+# ==================== 专为弹窗设计的精准物理点击模块 ====================
 def expand_turnstile(sb):
-    """把被盖住/压缩的验证框展开（overflow/尺寸修复），免得点不到"""
+    """修复被压缩或隐藏的容器尺寸"""
     try:
         sb.execute_script("""
             document.querySelectorAll('.cf-turnstile').forEach(function(c) {
@@ -95,30 +95,28 @@ def expand_turnstile(sb):
     except Exception:
         pass
 
-def handle_cloudflare_robust(sb, timeout=60):
-    """融合了成功版本思路的稳健 CF 过检：展开框 + 容器坐标物理点击 + token 实时检测"""
+def handle_modal_turnstile_robust(sb, timeout=60):
+    """对话框内第二个人机验证的稳健过检：展开 + 计算容器坐标精准物理点击"""
     iframe_selector = 'iframe[src*="challenges.cloudflare.com"]'
-    
     start_time = time.time()
+    
     while time.time() - start_time < timeout:
-        # 1. 检查是否已经生成 token 或者是已通过状态
+        # 1. 检查是否已经生成 token
         try:
             token = sb.execute_script('return document.querySelector("[name=cf-turnstile-response]")?.value || "";')
             if token and len(token) > 20:
-                print("[INFO] ✅ Cloudflare Turnstile token 已生成，验证通过！")
+                print("[INFO] ✅ 对话框内 Cloudflare Turnstile 已通过！")
                 return True
         except Exception:
             pass
 
         if not sb.is_element_present(iframe_selector):
-            # 如果连 iframe 都没了，说明可能已经过掉或还没加载出来，稍微等一下
             sb.sleep(1)
             continue
 
-        print("[INFO] 🛡️ 检测到 Cloudflare 验证，正在准备过检...")
+        print("[INFO] 🛡️ 检测到对话框内 Turnstile 验证，正在准备精准点击...")
         expand_turnstile(sb)
 
-        # 2. 计算 Turnstile 容器的绝对坐标进行精准物理点击
         try:
             rect = sb.execute_script("""
                 var inp = document.querySelector('input[name="cf-turnstile-response"]');
@@ -141,13 +139,12 @@ def handle_cloudflare_robust(sb, timeout=60):
                 inner_h = sb.execute_script("return window.innerHeight;")
                 x = w["x"] + rect[0] + 40 + random.uniform(-5, 5)
                 y = w["y"] + w["height"] - inner_h + rect[1] + rect[3] / 2.0 + random.uniform(-3, 3)
-                print(f"[INFO] ⚡ 正在通过 uc_gui_click_x_y 精准点击坐标: ({int(x)}, {int(y)})")
+                print(f"[INFO] ⚡ 正在点击对话框验证坐标: ({int(x)}, {int(y)})")
                 sb.uc_gui_click_x_y(x, y)
             else:
-                print("[INFO] ⚡ 未能精准计算坐标，改用默认 uc_gui_click_captcha()")
                 sb.uc_gui_click_captcha()
         except Exception as e:
-            print(f"[WARN] 物理点击异常: {e}")
+            print(f"[WARN] 点击异常: {e}")
             try:
                 sb.uc_gui_click_captcha()
             except Exception:
@@ -155,7 +152,7 @@ def handle_cloudflare_robust(sb, timeout=60):
 
         sb.sleep(4)
 
-    print("[WARN] ⚠️ Cloudflare 验证超时。")
+    print("[WARN] ⚠️ 对话框 Turnstile 验证超时。")
     return False
 # =========================================================================
 
@@ -191,8 +188,35 @@ def main():
             send_telegram_photo(sb, "2_输入账号密码")
 
             print("=== 3. 处理登录 Cloudflare 人机验证 ===")
-            remove_ads(sb)
-            handle_cloudflare_robust(sb, timeout=45)
+            # 严格使用您最开始验证通过的稳定登录循环逻辑
+            for attempt in range(1, 5):
+                remove_ads(sb)
+                print(f"尝试第 {attempt} 次点击登录 CF 验证...")
+                try:
+                    sb.click('input[type="checkbox"]')
+                except Exception:
+                    try:
+                        sb.uc_gui_click_captcha()
+                    except Exception:
+                        pass
+                
+                time.sleep(3)
+                
+                is_checked = False
+                try:
+                    is_checked = sb.is_checked('input[type="checkbox"]')
+                except Exception:
+                    try:
+                        is_checked = sb.execute_script('return document.querySelector(\'input[type="checkbox"]\').checked;')
+                    except Exception:
+                        pass
+
+                if is_checked:
+                    print("登录 Cloudflare 人机验证已通过！")
+                    break
+                else:
+                    print("验证尚未通过，准备重试...")
+
             send_telegram_photo(sb, "3_完成登录人机验证")
 
             print("=== 4. 点击 Sign In 按钮 ===")
@@ -314,9 +338,9 @@ def main():
                     time.sleep(20)
                     send_telegram_photo(sb, "8_点击ReadArticle等待20秒后")
 
-                    print("=== 6. 使用成功版本的稳健逻辑处理对话框内的第二个 Cloudflare 人机验证 ===")
+                    print("=== 6. 处理对话框内的第二个 Cloudflare 人机验证 ===")
                     remove_ads(sb)
-                    passed = handle_cloudflare_robust(sb, timeout=60)
+                    passed = handle_modal_turnstile_robust(sb, timeout=60)
                     
                     if not passed:
                         print("错误：对话框内的第二个 Cloudflare 人机验证未成功通过，严格终止程序！")
