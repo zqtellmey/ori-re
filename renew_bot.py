@@ -162,7 +162,7 @@ def main():
         print(f"服务器状态检查 -> renewable: {renewable}, renewal 剩余天数: {renewal_days}")
         send_telegram_photo(sb, f"5_服务器状态检查(剩余{renewal_days}天)")
 
-        # 如果 renewable 为 true 并且剩余天数 <= 2，则执行续期
+        # 如果测试需要（比如这里您改成了 <= 7 天或者实际满足 <= 2 天）
         if renewable and renewal_days <= 7:
             print("满足续期条件，开始前往续期页面...")
             remove_ads(sb)
@@ -170,49 +170,57 @@ def main():
             time.sleep(3)
             send_telegram_photo(sb, "6_到达服务器详情页")
 
-            print("寻找 Renew 按钮并点击...")
+            print("检查页面上是否存在 Renew 按钮...")
             remove_ads(sb)
             
-            # 使用多种稳妥方式尝试点击 Renew 按钮
-            clicked = False
+            # 先安全地检查页面上是否存在包含 "Renew" 的按钮，而不直接抛错中断
+            has_renew_button = False
             try:
-                # 方式 1：通过 XPath 定位包含 Renew 文字的按钮
-                sb.click('xpath://button[contains(., "Renew")]')
-                clicked = True
-            except Exception:
-                try:
-                    # 方式 2：通过 JavaScript 查找并触发点击
-                    js_click_script = """
+                js_check_script = """
+                (function() {
                     const buttons = document.querySelectorAll('button');
                     for (let btn of buttons) {
                         if (btn.innerText.includes('Renew')) {
-                            btn.click();
                             return true;
                         }
                     }
                     return false;
-                    """
-                    clicked = sb.execute_script(js_click_script)
-                except Exception as e:
-                    print(f"点击 Renew 按钮时发生异常: {e}")
+                })();
+                """
+                has_renew_button = sb.execute_script(js_check_script)
+            except Exception:
+                has_renew_button = False
 
-            if clicked:
-                print("成功点击 Renew 按钮。")
+            if has_renew_button:
+                print("检测到 Renew 按钮，开始点击...")
+                try:
+                    sb.click('xpath://button[contains(., "Renew")]')
+                except Exception:
+                    sb.execute_script("""
+                        const buttons = document.querySelectorAll('button');
+                        for (let btn of buttons) {
+                            if (btn.innerText.includes('Renew')) {
+                                btn.click();
+                                break;
+                            }
+                        }
+                    """)
+                
+                time.sleep(5)
+                send_telegram_photo(sb, "7_点击Renew之后")
+
+                print("再次通过 API 验证是否续期成功...")
+                check_response = session.get(API_SERVER_URL, headers=headers)
+                if check_response.status_code == 200:
+                    new_data = check_response.json().get("attributes", {})
+                    new_renewal_days = new_data.get("renewal")
+                    print(f"续期后的剩余天数: {new_renewal_days}")
+                    send_telegram_photo(sb, f"8_续期完成(新剩余天数{new_renewal_days}天)")
             else:
-                print("警告：未能通过常规方式找到 Renew 按钮。")
-
-            time.sleep(5)
-            send_telegram_photo(sb, "7_点击Renew之后")
-
-            print("再次通过 API 验证是否续期成功...")
-            check_response = session.get(API_SERVER_URL, headers=headers)
-            if check_response.status_code == 200:
-                new_data = check_response.json().get("attributes", {})
-                new_renewal_days = new_data.get("renewal")
-                print(f"续期后的剩余天数: {new_renewal_days}")
-                send_telegram_photo(sb, f"8_续期完成(新剩余天数{new_renewal_days}天)")
+                print("提示：当前页面未找到 Renew 按钮（可能还未到可续期时间或无需续期），跳过点击操作。")
+                send_telegram_photo(sb, "7_未找到Renew按钮跳过")
         else:
-            print("当前不需要续期（renewable 为 false 或剩余天数大于 2 天）。")
+            print("当前不需要续期（renewable 为 false 或剩余天数大于设定阈值）。")
             send_telegram_photo(sb, "6_当前无需续期跳过操作")
 
 if __name__ == "__main__":
