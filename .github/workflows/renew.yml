@@ -20,8 +20,10 @@ jobs:
 
       - name: Install dependencies
         run: |
+          sudo apt-get update
+          sudo apt-get install -y xvfb
           python -m pip install --upgrade pip
-          pip install seleniumbase requests pysocks
+          pip install seleniumbase requests pysocks pyvirtualdisplay
 
       - name: 安装并启动代理 (Xray VLESS+XHTTP TLS)
         env:
@@ -135,5 +137,10 @@ jobs:
           ORI_PASSWORD: ${{ secrets.ORI_PASSWORD }}
           TELEGRAM_BOT_TOKEN: ${{ secrets.TELEGRAM_BOT_TOKEN }}
           TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
+          PROXY_SOCKS5: ${{ env.PROXY_SOCKS5 }}
         run: |
+          # 启动虚拟屏服务给 SeleniumBase GUI 点击使用
+          Xvfb :99 -screen 0 1280x2400x24 > /dev/null 2>&1 &
+          export DISPLAY=:99
+          
           python renew_bot.py
